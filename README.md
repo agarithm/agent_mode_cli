@@ -1,6 +1,9 @@
 # agent_mode_cli
 Answering the question: What happens when you give the LLM bash?
 
+Inspired by [You Should Write an Agent](https://fly.io/blog/everyone-write-an-agent/) by Thomas H. Ptacek, @tqbf.
+
+
 ## Overview
 
 This repository contains Python command-line scripts for interacting with AI models:
@@ -65,3 +68,4 @@ To change the model, edit the respective script and modify the `model` parameter
 - Python 3.x (uses only standard library modules)
 - For `ai`: Ollama installed and running
 - For `am`: OpenAI API key
+
