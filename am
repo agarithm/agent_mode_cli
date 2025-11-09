@@ -57,12 +57,26 @@ def process(line):
     return response.output_text
 
 def main():
-    while True:
-        line = input("> ")
-        result = process(line)
-        print(f">>> {result}\n")
+    try:
+        while True:
+            line = input("> ")
+            if not line.strip():
+                continue
+            if line.strip().lower() in ("exit", "quit", "q"):
+                print("Exiting.")
+                break
+            result = process(line)
+            print(f">>> {result}\n")
+    except EOFError:           # Ctrl‑D
+        print("\nInterrupted – exiting.")
+        sys.exit(0)
+    except KeyboardInterrupt:        # Ctrl‑C
+        print("\nInterrupted – exiting.")
+        sys.exit(0)
+
 
 if __name__ == "__main__":
+    import sys
     import json
     import subprocess
     from openai import OpenAI
