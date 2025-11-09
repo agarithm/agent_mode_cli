@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""
+AM Script - OpenAI API Wrapper
+A simple command-line wrapper for OpenAI API.
+Usage: am <your prompt here>
+Requires: OPENAI_API_KEY environment variable
+"""
+
+import sys
+import json
+import os
+import urllib.request
+import urllib.error
+
+
+def main():
+    # Check if arguments are provided
+    if len(sys.argv) < 2:
+        print("Usage: am <your prompt here>", file=sys.stderr)
+        sys.exit(1)
+    
+    # Get API key from environment
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("Error: OPENAI_API_KEY environment variable not set", file=sys.stderr)
+        print("Please set it with: export OPENAI_API_KEY='your-api-key'", file=sys.stderr)
+        sys.exit(1)
+    
+    # Join all arguments as the prompt
+    prompt = " ".join(sys.argv[1:])
+    
+    # OpenAI API endpoint
+    openai_url = "https://api.openai.com/v1/chat/completions"
+    
+    # Prepare the request payload
+    payload = {
+        "model": "gpt-3.5-turbo",  # Default model, can be changed
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+    
+    try:
+        # Make the request to OpenAI API
+        req = urllib.request.Request(
+            openai_url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {api_key}'
+            }
+        )
+        
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            
+            # Print the response from the model
+            if 'choices' in result and len(result['choices']) > 0:
+                message = result['choices'][0].get('message', {})
+                content = message.get('content', '')
+                print(content)
+            else:
+                print("Unexpected response format:", result, file=sys.stderr)
+                sys.exit(1)
+    
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        print(f"HTTP Error {e.code}: {e.reason}", file=sys.stderr)
+        try:
+            error_data = json.loads(error_body)
+            if 'error' in error_data:
+                print(f"API Error: {error_data['error'].get('message', error_body)}", file=sys.stderr)
+        except:
+            print(f"Response: {error_body}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Error connecting to OpenAI API: {e}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing response: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
