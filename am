@@ -1,88 +1,71 @@
 #!/usr/bin/env python3
-"""
-AM Script - OpenAI API Wrapper
-A simple command-line wrapper for OpenAI API.
-Usage: am <your prompt here>
-Requires: OPENAI_API_KEY environment variable
-"""
 
-import sys
-import json
-import os
-import urllib.request
-import urllib.error
 
+client = None
+context = []
+
+tools = [{
+   "type": "function", "name": "ping",
+   "description": "ping some host on the internet",
+   "parameters": {
+       "type": "object", "properties": {
+           "host": {
+             "type": "string", "description": "hostname or IP",
+            },
+       },
+       "required": ["host"],
+    },},]
+
+def ping(host=""):
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "5", host],
+            text=True,
+            stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE)
+        return result.stdout
+    except Exception as e:
+        return f"error: {e}"
+
+def call(tools):        # now takes an arg
+    return client.responses.create(model="gpt-5", tools=tools, input=context)
+
+def tool_call(item):    # just handles one tool
+    result = ping(**json.loads(item.arguments))
+    return [ item, {
+        "type": "function_call_output",
+        "call_id": item.call_id,
+        "output": result
+    }]
+
+def handle_tools(tools, response):
+    if response.output[0].type == "reasoning":
+        context.append(response.output[0])
+    osz = len(context)
+    for item in response.output:
+        if item.type == "function_call":
+            context.extend(tool_call(item))
+    return len(context) != osz
+
+def process(line):
+    context.append({"role": "user", "content": line})
+    response = call(tools)
+    # new code: resolve tool calls
+    while handle_tools(tools, response):
+        response = call(tools)
+    context.append({"role": "assistant", "content": response.output_text})
+    return response.output_text
 
 def main():
-    # Check if arguments are provided
-    if len(sys.argv) < 2:
-        print("Usage: am <your prompt here>", file=sys.stderr)
-        sys.exit(1)
-    
-    # Get API key from environment
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("Error: OPENAI_API_KEY environment variable not set", file=sys.stderr)
-        print("Please set it with: export OPENAI_API_KEY='your-api-key'", file=sys.stderr)
-        sys.exit(1)
-    
-    # Join all arguments as the prompt
-    prompt = " ".join(sys.argv[1:])
-    
-    # OpenAI API endpoint
-    openai_url = "https://api.openai.com/v1/chat/completions"
-    
-    # Prepare the request payload
-    payload = {
-        "model": "gpt-3.5-turbo",  # Default model, can be changed
-        "messages": [
-            {"role": "user", "content": prompt}
-        ]
-    }
-    
-    try:
-        # Make the request to OpenAI API
-        req = urllib.request.Request(
-            openai_url,
-            data=json.dumps(payload).encode('utf-8'),
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {api_key}'
-            }
-        )
-        
-        with urllib.request.urlopen(req) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            
-            # Print the response from the model
-            if 'choices' in result and len(result['choices']) > 0:
-                message = result['choices'][0].get('message', {})
-                content = message.get('content', '')
-                print(content)
-            else:
-                print("Unexpected response format:", result, file=sys.stderr)
-                sys.exit(1)
-    
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode('utf-8')
-        print(f"HTTP Error {e.code}: {e.reason}", file=sys.stderr)
-        try:
-            error_data = json.loads(error_body)
-            if 'error' in error_data:
-                print(f"API Error: {error_data['error'].get('message', error_body)}", file=sys.stderr)
-        except:
-            print(f"Response: {error_body}", file=sys.stderr)
-        sys.exit(1)
-    except urllib.error.URLError as e:
-        print(f"Error connecting to OpenAI API: {e}", file=sys.stderr)
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        print(f"Error parsing response: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
-        sys.exit(1)
-
+    while True:
+        line = input("> ")
+        result = process(line)
+        print(f">>> {result}\n")
 
 if __name__ == "__main__":
+    import json
+    import subprocess
+    from openai import OpenAI
+
+    client = OpenAI()
     main()
