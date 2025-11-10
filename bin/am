@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+
+
+client = None
+context = []
+DEBUG = True
+
+tools = [{
+   "type": "function", "name": "ping",
+   "description": "ping some host on the internet",
+   "parameters": {
+       "type": "object", "properties": {
+           "host": {
+             "type": "string", "description": "hostname or IP",
+            },
+       },
+       "required": ["host"],
+    },},]
+
+def ping(host=""):
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "5", host],
+            text=True,
+            stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE)
+        return result.stdout
+    except Exception as e:
+        return f"error: {e}"
+
+def append_context(item):
+    if isinstance(item, dict):
+        if not item:
+            if DEBUG:
+                print("[debug] skipped appending empty dict to context")
+            return
+        content = item.get("content")
+        extra_keys = set(item.keys()) - {"role", "content"}
+        if isinstance(content, str) and not content.strip() and not extra_keys:
+            if DEBUG:
+                print("[debug] skipped appending empty content message")
+            return
+    context.append(item)
+
+def extend_context(items):
+    for entry in items:
+        append_context(entry)
+
+def call(tools):        # now takes an arg
+    if DEBUG:
+        print(f"[debug] calling model with context of {len(context)} messages")
+        for msg in context:
+            if isinstance(msg, dict):
+                role = msg.get("role") or msg.get("type", "?")
+                if "content" in msg:
+                    content = msg["content"]
+                elif "output" in msg:
+                    content = msg["output"]
+                else:
+                    content = ""
+                preview = content if isinstance(content, str) else json.dumps(content)
+            else:
+                role = type(msg).__name__
+                preview = str(msg)
+            preview = preview if len(preview) <= 60 else preview[:60] + "..."
+            print(f"[debug]   {role}: {preview}")
+    return client.responses.create(model="gpt-5", tools=tools, input=context)
+
+def stringify_reasoning(item):
+    """Convert a reasoning output chunk into plain text for the chat log."""
+    pieces = []
+    for chunk in getattr(item, "content", []) or []:
+        text = getattr(chunk, "text", None)
+        if text:
+            pieces.append(text)
+    fallback = getattr(item, "text", None)
+    if fallback:
+        pieces.append(fallback)
+    return "\n".join(pieces).strip()
+
+def tool_call(item):    # just handles one tool
+    result = ping(**json.loads(item.arguments))
+    output_text = result.strip()
+    if not output_text:
+        output_text = "(no output)"
+    return [
+        item,
+        {
+            "type": "function_call_output",
+            "call_id": item.call_id,
+            "output": output_text
+        }
+    ]
+
+def handle_tools(tools, response):
+    has_function_call = any(item.type == "function_call" for item in response.output)
+    if response.output and response.output[0].type == "reasoning":
+        reasoning_item = response.output[0]
+        if has_function_call:
+            append_context(reasoning_item)
+            if DEBUG:
+                print("[debug] reasoning event stored for tool call")
+        else:
+            reasoning_text = stringify_reasoning(reasoning_item)
+            if reasoning_text:
+                append_context({"role": "assistant", "content": f"[reasoning]\n{reasoning_text}"})
+                if DEBUG:
+                    print(f"[debug] reasoning detail captured as text - {reasoning_text}")
+    osz = len(context)
+    for item in response.output:
+        if item.type == "function_call":
+            if DEBUG:
+                print(f"[debug] executing tool: {item.name}")
+            extend_context(tool_call(item))
+    if DEBUG:
+        print("[debug] tool handling complete")
+    return len(context) != osz
+
+def process(line):
+    if DEBUG:
+        print(f"[debug] processing line: {line}")
+    append_context({"role": "user", "content": line})
+    response = call(tools)
+    # new code: resolve tool calls
+    while handle_tools(tools, response):
+        if DEBUG:
+            print("[debug] tool called, fetching follow-up response")
+        response = call(tools)
+    if DEBUG:
+        print("[debug] completed response cycle")
+    if getattr(response, "output_text", None):
+        append_context({"role": "assistant", "content": response.output_text})
+    return response.output_text
+
+def main(initial_line=None):
+    try:
+        if initial_line is not None:
+            stripped = initial_line.strip()
+            if stripped:
+                result = process(stripped)
+                print(f">>> {result}\n")
+        while True:
+            line = input("> ")
+            if not line.strip():
+                continue
+            if line.strip().lower() in ("exit", "quit", "q"):
+                print("Exiting.")
+                break
+            result = process(line)
+            print(f">>> {result}\n")
+    except EOFError:           # Ctrl‑D
+        print("\nInterrupted – exiting.")
+        sys.exit(0)
+    except KeyboardInterrupt:        # Ctrl‑C
+        print("\nInterrupted – exiting.")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    import sys
+    import json
+    import subprocess
+    from openai import OpenAI
+
+    client = OpenAI()
+    initial_line = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    main(initial_line)

@@ -6,14 +6,14 @@ Inspired by [You Should Write an Agent](https://fly.io/blog/everyone-write-an-ag
 
 ## Overview
 
-This repository contains Python command-line scripts for interacting with AI models:
+This repository contains Python command-line scripts (located in `bin/`) for interacting with AI models:
 
 - **`ai`** - A simple wrapper for prompting local Ollama models on the command line
 - **`am`** - An agent mode ai with tool calling bash on your local machine, uses OpenAI API
 
 ## Installation
 
-1. Clone this repository or download the scripts
+1. Clone this repository or download the scripts from the `bin/` directory
 2. Copy the scripts to your `~/bin` directory:
    ```bash
    cp bin/ai ~/bin/
