@@ -6,10 +6,10 @@ Inspired by [You Should Write an Agent](https://fly.io/blog/everyone-write-an-ag
 
 ## Overview
 
-This repository contains Python command-line scripts (located in `bin/`) for interacting with AI models:
+This repository contains command-line scripts (located in `bin/`) for interacting with AI models:
 
-- **`ai`** - A simple wrapper for prompting local Ollama models on the command line
-- **`am`** - An agent mode ai with tool calling bash on your local machine, uses OpenAI API
+- **`ai`** - Bash wrapper for prompting local Ollama models on the command line
+- **`am`** - Python agent-mode CLI that uses OpenAI API and can call limited local tools (ping, sed, grep, git, curl) on your machine
 
 ## Installation
 
@@ -48,10 +48,14 @@ Sends prompts to OpenAI's API, with the ability to execute bash commands on the 
 
 **Prerequisites:**
 - OpenAI API key (set as environment variable)
+- Python package: `openai` (install with: `pip install -U openai`)
 
 **Setup:**
 ```bash
 export OPENAI_API_KEY='your-api-key-here'
+# Optional:
+export AM_MODEL='gpt-4o-mini'    # default used by `am` if not set
+export AM_DEBUG=1                # enable verbose debug logs (use 0 to disable)
 ```
 
 **Usage:**

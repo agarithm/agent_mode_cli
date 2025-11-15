@@ -1,7 +1,5 @@
-# !/bin/bash
+#!/usr/bin/env bash
 # Bash Script to call ollama model with passed in arguments
-cd ~
-clear
 
 #MODEL=deepseek-r1
 #MODEL=qwen2.5-coder

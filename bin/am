@@ -1,32 +1,293 @@
 #!/usr/bin/env python3
 
+import json
+import shlex
+import subprocess
+import sys
+import os
+
+from openai import OpenAI
+
 
 client = None
 context = []
-DEBUG = True
+DEBUG = os.getenv("AM_DEBUG", "").lower() in ("1","true","yes","on")
+DEFAULT_MODEL = os.getenv("AM_MODEL", "gpt-4o-mini")
 
 tools = [{
    "type": "function", "name": "ping",
-   "description": "ping some host on the internet",
+   "description": "Ping some host on the internet.",
    "parameters": {
        "type": "object", "properties": {
            "host": {
-             "type": "string", "description": "hostname or IP",
+             "type": "string", "description": "Hostname or IP to ping",
             },
        },
        "required": ["host"],
-    },},]
+    },},
+   {
+    "type": "function", "name": "sed",
+    "description": "Run sed with an expression against one or more files.",
+    "parameters": {
+        "type": "object", "properties": {
+            "script": {
+                "type": "string",
+                "description": "Sed script, e.g. s/foo/bar/g"
+            },
+            "files": {
+                "type": "array",
+                "description": "Files to process",
+                "items": {"type": "string"}
+            },
+            "in_place": {
+                "type": "boolean",
+                "description": "Apply changes in place (sed -i). Requires confirmation."
+            },
+            "options": {
+                "type": "array",
+                "description": "Additional sed options, each as a separate item",
+                "items": {"type": "string"}
+            }
+        },
+        "required": ["script"],
+    }
+   },
+   {
+    "type": "function", "name": "grep",
+    "description": "Search for a pattern within files or directories.",
+    "parameters": {
+        "type": "object", "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Pattern to search for"
+            },
+            "target": {
+                "type": "string",
+                "description": "File or directory to search (required)"
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "Use recursive search"
+            },
+            "options": {
+                "type": "array",
+                "description": "Additional grep options",
+                "items": {"type": "string"}
+            }
+        },
+        "required": ["pattern", "target"],
+    }
+   },
+   {
+    "type": "function", "name": "git",
+    "description": "Execute git commands inside the repository.",
+    "parameters": {
+        "type": "object", "properties": {
+            "args": {
+                "type": "array",
+                "description": "Arguments to pass to git in order",
+                "items": {"type": "string"}
+            }
+        },
+        "required": ["args"],
+    }
+   },
+   {
+    "type": "function", "name": "curl",
+    "description": "Use curl to fetch remote resources.",
+    "parameters": {
+        "type": "object", "properties": {
+            "url": {
+                "type": "string",
+                "description": "The URL to request"
+            },
+            "options": {
+                "type": "array",
+                "description": "Additional curl options",
+                "items": {"type": "string"}
+            },
+            "data": {
+                "type": "string",
+                "description": "Optional data payload for POST/PUT requests"
+            }
+        },
+        "required": ["url"],
+    }
+   }
+]
 
-def ping(host=""):
+def run_cli_command(command, input_text=None):
     try:
         result = subprocess.run(
-            ["ping", "-c", "5", host],
+            command,
+            input=input_text,
             text=True,
             stderr=subprocess.STDOUT,
             stdout=subprocess.PIPE)
         return result.stdout
-    except Exception as e:
-        return f"error: {e}"
+    except FileNotFoundError as exc:
+        return f"error: command not found ({exc})"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
+def build_ping_cli(host=""):
+    if not host:
+        return None, "error: host is required"
+    return ["ping", "-c", "5", host], None
+
+
+def build_sed_cli(script="", files=None, in_place=False, options=None):
+    if not script:
+        return None, "error: script is required"
+    files = files or []
+    if not files:
+        return None, "error: at least one file must be provided"
+    options = options or []
+    cmd = ["sed"]
+    if options:
+        cmd.extend(options)
+    if in_place:
+        cmd.append("-i")
+    cmd.append(script)
+    cmd.extend(files)
+    return cmd, None
+
+
+def build_grep_cli(pattern="", target="", recursive=False, options=None):
+    if not pattern:
+        return None, "error: pattern is required"
+    if not target:
+        return None, "error: target is required"
+    cmd = ["grep", "-n"]
+    if recursive:
+        cmd.append("-r")
+    if options:
+        cmd.extend(options)
+    cmd.append(pattern)
+    cmd.append(target)
+    return cmd, None
+
+
+def build_git_cli(args=None):
+    if not args:
+        return None, "error: args are required"
+    return ["git", *list(args)], None
+
+
+def build_curl_cli(url="", options=None, data=None):
+    if not url:
+        return None, "error: url is required"
+    cmd = ["curl"]
+    if options:
+        cmd.extend(options)
+    if data is not None:
+        cmd.extend(["--data", data])
+    cmd.append(url)
+    return cmd, None
+
+def ping(host=""):
+    cmd, error = build_ping_cli(host=host)
+    if error:
+        return error
+    return run_cli_command(cmd)
+
+def sed_command(script="", files=None, in_place=False, options=None):
+    cmd, error = build_sed_cli(script=script, files=files, in_place=in_place, options=options)
+    if error:
+        return error
+    return run_cli_command(cmd)
+
+def grep_command(pattern="", target="", recursive=False, options=None):
+    cmd, error = build_grep_cli(pattern=pattern, target=target, recursive=recursive, options=options)
+    if error:
+        return error
+    return run_cli_command(cmd)
+
+def git_command(args=None):
+    cmd, error = build_git_cli(args=args)
+    if error:
+        return error
+    return run_cli_command(cmd)
+
+def curl_command(url="", options=None, data=None):
+    cmd, error = build_curl_cli(url=url, options=options, data=data)
+    if error:
+        return error
+    return run_cli_command(cmd)
+
+TOOL_FUNCTIONS = {
+    "ping": ping,
+    "sed": sed_command,
+    "grep": grep_command,
+    "git": git_command,
+    "curl": curl_command,
+}
+
+COMMAND_BUILDERS = {
+    "ping": build_ping_cli,
+    "sed": build_sed_cli,
+    "grep": build_grep_cli,
+    "git": build_git_cli,
+    "curl": build_curl_cli,
+}
+
+MODIFYING_TOOLS = {"git"}
+
+
+def format_command_preview(tool_name, arguments):
+    builder = COMMAND_BUILDERS.get(tool_name)
+    if not builder:
+        return None
+    try:
+        command, error = builder(**arguments)
+    except TypeError:
+        return None
+    if error or not command:
+        return None
+    try:
+        return shlex.join(command)
+    except Exception:
+        return " ".join(command)
+
+def curl_option_requires_confirmation(option):
+    if option in {"-o", "--output", "-O", "-C", "--upload-file", "-T"}:
+        return True
+    return option.startswith("--output=")
+
+def requires_confirmation(tool_name, arguments):
+    if tool_name in MODIFYING_TOOLS:
+        return True
+    if tool_name == "sed" and arguments.get("in_place"):
+        return True
+    if tool_name == "curl":
+        options = arguments.get("options") or []
+        return any(curl_option_requires_confirmation(opt) for opt in options)
+    return False
+
+def prompt_for_confirmation(tool_name, arguments):
+    print(f"[confirm] The '{tool_name}' tool may modify files or system state.")
+    if arguments:
+        try:
+            pretty_args = json.dumps(arguments, indent=2)
+        except TypeError:
+            pretty_args = str(arguments)
+        print(f"[confirm] Arguments:\n{pretty_args}")
+    preview = format_command_preview(tool_name, arguments if isinstance(arguments, dict) else {})
+    if preview:
+        print(f"[confirm] Command: {preview}")
+    while True:
+        try:
+            answer = input("Proceed? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            if DEBUG:
+                print("[debug] confirmation prompt interrupted; defaulting to no")
+            return False
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("", "n", "no"):
+            return False
+        print("Please respond with 'y' or 'n'.")
 
 def append_context(item):
     if isinstance(item, dict):
@@ -64,7 +325,7 @@ def call(tools):        # now takes an arg
                 preview = str(msg)
             preview = preview if len(preview) <= 60 else preview[:60] + "..."
             print(f"[debug]   {role}: {preview}")
-    return client.responses.create(model="gpt-5", tools=tools, input=context)
+    return client.responses.create(model=DEFAULT_MODEL, tools=tools, input=context)
 
 def stringify_reasoning(item):
     """Convert a reasoning output chunk into plain text for the chat log."""
@@ -78,11 +339,27 @@ def stringify_reasoning(item):
         pieces.append(fallback)
     return "\n".join(pieces).strip()
 
-def tool_call(item):    # just handles one tool
-    result = ping(**json.loads(item.arguments))
-    output_text = result.strip()
-    if not output_text:
-        output_text = "(no output)"
+def tool_call(item, args=None):    # just handles one tool
+    handler = TOOL_FUNCTIONS.get(item.name)
+    output_text = None
+    if args is None:
+        try:
+            args = json.loads(item.arguments or "{}")
+        except json.JSONDecodeError as exc:
+            args = {}
+            handler = None
+            output_text = f"error: could not parse arguments ({exc})"
+    if handler is None:
+        if output_text is None:
+            output_text = f"error: unknown tool '{item.name}'"
+    else:
+        try:
+            result = handler(**args)
+        except TypeError as exc:
+            result = f"error: invalid arguments - {exc}"
+        except Exception as exc:
+            result = f"error: {exc}"
+        output_text = (result or "").strip() or "(no output)"
     return [
         item,
         {
@@ -107,14 +384,47 @@ def handle_tools(tools, response):
                 if DEBUG:
                     print(f"[debug] reasoning detail captured as text - {reasoning_text}")
     osz = len(context)
+    cancelled = False
+    cancel_message = ""
     for item in response.output:
-        if item.type == "function_call":
+        if item.type != "function_call":
+            continue
+        if DEBUG:
+            print(f"[debug] executing tool: {item.name}")
+        try:
+            args = json.loads(item.arguments or "{}") if item.arguments else {}
+            if not isinstance(args, dict):
+                raise ValueError("tool arguments must be an object")
+        except (json.JSONDecodeError, ValueError) as exc:
             if DEBUG:
-                print(f"[debug] executing tool: {item.name}")
-            extend_context(tool_call(item))
+                print(f"[debug] failed to parse arguments for {item.name}: {exc}")
+            extend_context([
+                item,
+                {
+                    "type": "function_call_output",
+                    "call_id": item.call_id,
+                    "output": f"error: unable to parse arguments ({exc})"
+                }
+            ])
+            continue
+        if requires_confirmation(item.name, args):
+            if not prompt_for_confirmation(item.name, args):
+                cancel_message = f"Tool '{item.name}' execution cancelled by user."
+                extend_context([
+                    item,
+                    {
+                        "type": "function_call_output",
+                        "call_id": item.call_id,
+                        "output": "cancelled by user"
+                    }
+                ])
+                append_context({"role": "assistant", "content": cancel_message})
+                cancelled = True
+                break
+        extend_context(tool_call(item, args=args))
     if DEBUG:
         print("[debug] tool handling complete")
-    return len(context) != osz
+    return len(context) != osz, cancelled, cancel_message
 
 def process(line):
     if DEBUG:
@@ -122,7 +432,14 @@ def process(line):
     append_context({"role": "user", "content": line})
     response = call(tools)
     # new code: resolve tool calls
-    while handle_tools(tools, response):
+    while True:
+        has_more, cancelled, cancel_message = handle_tools(tools, response)
+        if cancelled:
+            if DEBUG:
+                print("[debug] tool execution cancelled by user; returning to prompt")
+            return cancel_message or "Tool execution cancelled by user."
+        if not has_more:
+            break
         if DEBUG:
             print("[debug] tool called, fetching follow-up response")
         response = call(tools)
