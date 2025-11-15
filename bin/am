@@ -12,7 +12,7 @@ from openai import OpenAI
 client = None
 context = []
 DEBUG = os.getenv("AM_DEBUG", "").lower() in ("1","true","yes","on")
-DEFAULT_MODEL = os.getenv("AM_MODEL", "gpt-4o-mini")
+DEFAULT_MODEL = os.getenv("AM_MODEL", "gpt-5.1-codex")
 
 tools = [{
    "type": "function", "name": "ping",
