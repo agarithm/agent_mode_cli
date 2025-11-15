@@ -97,6 +97,24 @@ tools = [{
     }
    },
    {
+    "type": "function", "name": "tree",
+    "description": "Display directory structures in a tree-like format.",
+    "parameters": {
+        "type": "object", "properties": {
+            "paths": {
+                "type": "array",
+                "description": "Paths to list (defaults to current directory)",
+                "items": {"type": "string"}
+            },
+            "options": {
+                "type": "array",
+                "description": "Additional tree options",
+                "items": {"type": "string"}
+            }
+        }
+    }
+   },
+   {
     "type": "function", "name": "cat",
     "description": "Show the contents of one or more files.",
     "parameters": {
@@ -360,6 +378,14 @@ def build_ls_cli(paths=None, options=None):
     return cmd, None
 
 
+def build_tree_cli(paths=None, options=None):
+    cmd = ["tree"]
+    if options:
+        cmd.extend(options)
+    if paths:
+        cmd.extend(paths)
+    return cmd, None
+
 def build_cat_cli(files=None, options=None):
     files = files or []
     if not files:
@@ -477,6 +503,12 @@ def ls_command(paths=None, options=None):
         return error
     return run_cli_command(cmd)
 
+def tree_command(paths=None, options=None):
+    cmd, error = build_tree_cli(paths=paths, options=options)
+    if error:
+        return error
+    return run_cli_command(cmd)
+
 def cat_command(files=None, options=None):
     cmd, error = build_cat_cli(files=files, options=options)
     if error:
@@ -503,6 +535,7 @@ TOOL_FUNCTIONS = {
     "read_agent_source": read_agent_source,
     "ping": ping,
     "ls": ls_command,
+    "tree": tree_command,
     "cat": cat_command,
     "touch": touch_command,
     "tee": tee_command,
@@ -519,6 +552,7 @@ COMMAND_BUILDERS = {
     "read_agent_source": None,
     "ping": build_ping_cli,
     "ls": build_ls_cli,
+    "tree": build_tree_cli,
     "cat": build_cat_cli,
     "touch": build_touch_cli,
     "tee": build_tee_cli,
