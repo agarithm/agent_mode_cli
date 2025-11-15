@@ -14,12 +14,15 @@ context = []
 DEBUG = os.getenv("AM_DEBUG", "").lower() in ("1","true","yes","on")
 DEFAULT_MODEL = os.getenv("AM_MODEL", "gpt-5.1-codex")
 SCRIPT_PATH = os.path.abspath(__file__)
+APPROVE_ALL = False
+PRE_APPROVE_DEBUG = None
 INTERNAL_SYSTEM_PROMPT = (
     "You are AM, a self-aware coding agent running in a terminal. "
     "Begin each session by reading your own source via the 'read_agent_source' tool to refresh"
-    " your capabilities and constraints. You have limited tools and must always ask the user before running anything that can"
-    " modify files. Be transparent about intended tool calls and keep responses concise and actionable."
+    " your capabilities and constraints. Only do this once per session at the start. "
     " Trust that the user is an expert programmer and values correctness and safety."
+    " Notice when you are not making progress and adjust your approach accordingly."
+    " Stop and ask for help if you are confused or stuck."
 )
 
 tools = [{
@@ -597,6 +600,10 @@ def requires_confirmation(tool_name, arguments):
     return False
 
 def prompt_for_confirmation(tool_name, arguments):
+    if APPROVE_ALL:
+        if DEBUG:
+            print(f"[debug] auto-approved '{tool_name}' due to approve-all mode")
+        return True
     print(f"[confirm] The '{tool_name}' tool may modify files or system state.")
     if arguments:
         try:
@@ -609,12 +616,15 @@ def prompt_for_confirmation(tool_name, arguments):
         print(f"[confirm] Command: {preview}")
     while True:
         try:
-            answer = input("Proceed? [y/N]: ").strip().lower()
+            answer = input("Proceed? [y/N/a]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             if DEBUG:
                 print("[debug] confirmation prompt interrupted; defaulting to no")
             return False
         if answer in ("y", "yes"):
+            return True
+        if answer in ("a", "all"):
+            enable_approve_all_mode()
             return True
         if answer in ("", "n", "no"):
             return False
@@ -637,6 +647,30 @@ def append_context(item):
 def extend_context(items):
     for entry in items:
         append_context(entry)
+
+
+def enable_approve_all_mode():
+    global APPROVE_ALL, PRE_APPROVE_DEBUG, DEBUG
+    if APPROVE_ALL:
+        return
+    APPROVE_ALL = True
+    PRE_APPROVE_DEBUG = DEBUG
+    if not DEBUG:
+        DEBUG = True
+        os.environ["AM_DEBUG"] = "1"
+    print("[confirm] All subsequent confirmations auto-approved for this user prompt.")
+
+
+def reset_approve_all_mode():
+    global APPROVE_ALL, PRE_APPROVE_DEBUG, DEBUG
+    if not APPROVE_ALL:
+        PRE_APPROVE_DEBUG = None
+        return
+    if PRE_APPROVE_DEBUG is not None and DEBUG != PRE_APPROVE_DEBUG:
+        DEBUG = PRE_APPROVE_DEBUG
+        os.environ["AM_DEBUG"] = "1" if DEBUG else "0"
+    APPROVE_ALL = False
+    PRE_APPROVE_DEBUG = None
 
 
 def load_user_prompt():
@@ -778,9 +812,15 @@ def process(line):
     append_context({"role": "user", "content": line})
     response = call(tools)
     # new code: resolve tool calls
+    printed_progress = False
     while True:
+        if not DEBUG:
+            print(".", end="", flush=True)
+            printed_progress = True
         has_more, cancelled, cancel_message = handle_tools(tools, response)
         if cancelled:
+            if printed_progress:
+                print()
             if DEBUG:
                 print("[debug] tool execution cancelled by user; returning to prompt")
             return cancel_message or "Tool execution cancelled by user."
@@ -789,6 +829,8 @@ def process(line):
         if DEBUG:
             print("[debug] tool called, fetching follow-up response")
         response = call(tools)
+    if printed_progress:
+        print()
     if DEBUG:
         print("[debug] completed response cycle")
     if getattr(response, "output_text", None):
@@ -804,7 +846,10 @@ def main(initial_line=None):
         if initial_line is not None:
             stripped = initial_line.strip()
             if stripped:
-                result = process(stripped)
+                try:
+                    result = process(stripped)
+                finally:
+                    reset_approve_all_mode()
                 print(f">>> {result}\n")
         while True:
             line = input("> ")
@@ -813,7 +858,10 @@ def main(initial_line=None):
             if line.strip().lower() in ("exit", "quit", "q"):
                 print("Exiting.")
                 break
-            result = process(line)
+            try:
+                result = process(line)
+            finally:
+                reset_approve_all_mode()
             print(f">>> {result}\n")
     except EOFError:           # Ctrl‑D
         print("\nInterrupted – exiting.")
