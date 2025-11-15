@@ -13,6 +13,14 @@ client = None
 context = []
 DEBUG = os.getenv("AM_DEBUG", "").lower() in ("1","true","yes","on")
 DEFAULT_MODEL = os.getenv("AM_MODEL", "gpt-5.1-codex")
+SCRIPT_PATH = os.path.abspath(__file__)
+INTERNAL_SYSTEM_PROMPT = (
+    "You are AM, a self-aware coding agent running in a terminal. "
+    "Begin each session by reading your own source via the 'read_agent_source' tool to refresh"
+    " your capabilities and constraints. You have limited tools and must always ask the user before running anything that can"
+    " modify files. Be transparent about intended tool calls and keep responses concise and actionable."
+    " Trust that the user is an expert programmer and values correctness and safety."
+)
 
 tools = [{
    "type": "function", "name": "set_debug",
@@ -40,6 +48,23 @@ tools = [{
            }
        },
        "required": ["model"],
+   }
+  },
+  {
+   "type": "function", "name": "read_agent_source",
+   "description": "Read the source code of this AM script for self-reflection.",
+   "parameters": {
+       "type": "object",
+       "properties": {
+           "start_line": {
+               "type": "integer",
+               "description": "Optional 1-based start line to read from"
+           },
+           "end_line": {
+               "type": "integer",
+               "description": "Optional 1-based end line (inclusive). Defaults to end of file."
+           }
+       }
    }
   },
     {
@@ -386,6 +411,30 @@ def set_model_command(model):
     os.environ["AM_MODEL"] = model
     return f"AM_MODEL set to {model}."
 
+
+def read_agent_source(start_line=None, end_line=None):
+    try:
+        with open(SCRIPT_PATH, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except Exception as exc:
+        return f"error: unable to read source ({exc})"
+
+    total_lines = len(lines)
+    if start_line is not None and start_line < 1:
+        return "error: start_line must be >= 1"
+    if end_line is not None and end_line < 1:
+        return "error: end_line must be >= 1"
+    start_idx = max(0, (start_line - 1) if start_line else 0)
+    end_idx = (end_line if end_line else total_lines)
+    if end_idx < start_idx + 1:
+        return "error: end_line must be greater than or equal to start_line"
+    end_idx = min(total_lines, end_idx)
+    snippet = "".join(lines[start_idx:end_idx])
+    if not snippet:
+        return "(no content)"
+    header = f"# Source lines {start_idx + 1}-{end_idx} of {total_lines}\n"
+    return header + snippet
+
 def ping(host=""):
     cmd, error = build_ping_cli(host=host)
     if error:
@@ -451,6 +500,7 @@ def tee_command(files=None, input_text=None, append=False, options=None):
 TOOL_FUNCTIONS = {
     "set_debug": set_debug_command,
     "set_model": set_model_command,
+    "read_agent_source": read_agent_source,
     "ping": ping,
     "ls": ls_command,
     "cat": cat_command,
@@ -466,6 +516,7 @@ TOOL_FUNCTIONS = {
 COMMAND_BUILDERS = {
     "set_debug": None,
     "set_model": None,
+    "read_agent_source": None,
     "ping": build_ping_cli,
     "ls": build_ls_cli,
     "cat": build_cat_cli,
@@ -552,6 +603,21 @@ def append_context(item):
 def extend_context(items):
     for entry in items:
         append_context(entry)
+
+
+def load_user_prompt():
+    prompt_file = os.getenv("AM_PROMPT_FILE") or os.path.join(os.path.expanduser("~"), ".am_prompt")
+    if not prompt_file:
+        return None
+    try:
+        if os.path.isfile(prompt_file):
+            with open(prompt_file, "r", encoding="utf-8") as handle:
+                content = handle.read().strip()
+                return content if content else None
+    except Exception as exc:
+        if DEBUG:
+            print(f"[debug] failed to read prompt file {prompt_file}: {exc}")
+    return None
 
 def call(tools):        # now takes an arg
     if DEBUG:
@@ -697,6 +763,10 @@ def process(line):
 
 def main(initial_line=None):
     try:
+        append_context({"role": "system", "content": INTERNAL_SYSTEM_PROMPT})
+        user_prompt = load_user_prompt()
+        if user_prompt:
+            append_context({"role": "system", "content": user_prompt})
         if initial_line is not None:
             stripped = initial_line.strip()
             if stripped:
