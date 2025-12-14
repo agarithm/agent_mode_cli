@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+
+"""OM - Ollama-powered Agent Mode CLI."""
+
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import subprocess
+import sys
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+
+import ollama
+from ollama import Client, RequestError, ResponseError
+
+
+client: Optional[Client] = None
+context: List[Dict[str, Any]] = []
+
+DEBUG = os.getenv("OM_DEBUG", os.getenv("AM_DEBUG", "")).lower() in ("1", "true", "yes", "on")
+DEFAULT_MODEL = os.getenv("OM_MODEL", os.getenv("AM_MODEL", "llama3.2"))
+SCRIPT_PATH = os.path.abspath(__file__)
+APPROVE_ALL = False
+PRE_APPROVE_DEBUG: Optional[bool] = None
+INTERNAL_SYSTEM_PROMPT = (
+    "You are OM, a self-aware coding agent running in a terminal. "
+    "You have access to a bash tool that can execute any bash command. "
+    "Trust that the user is an expert programmer and values correctness and safety. "
+    "Stop and ask for help if you are confused or stuck. Don't guess. "
+    "Confine yourself the current working directory and its subdirectories. "
+)
+
+
+RAW_TOOL_SPECS: Sequence[Dict[str, Any]] = [
+    {
+        "name": "set_debug",
+        "description": "Toggle OM_DEBUG on or off.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether debugging should be enabled."
+                }
+            },
+            "required": ["enabled"],
+        },
+    },
+    {
+        "name": "set_model",
+        "description": "Change the OM_MODEL used for future API calls.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "description": "Model identifier to use."
+                }
+            },
+            "required": ["model"],
+        },
+    },
+    {
+        "name": "bash",
+        "description": "Execute bash commands in a shell. Can run any bash command or script.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to execute"
+                }
+            },
+            "required": ["command"],
+        },
+    },
+]
+
+
+def _build_tool_spec(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": raw["name"],
+            "description": raw.get("description", ""),
+            "parameters": raw.get("parameters", {}),
+        },
+    }
+
+
+tools: List[Dict[str, Any]] = [_build_tool_spec(spec) for spec in RAW_TOOL_SPECS]
+
+
+def set_debug_command(enabled: bool) -> str:
+    global DEBUG
+    DEBUG = bool(enabled)
+    os.environ["OM_DEBUG"] = "1" if DEBUG else "0"
+    state = "enabled" if DEBUG else "disabled"
+    return f"OM_DEBUG {state}."
+
+
+def set_model_command(model: str) -> str:
+    global DEFAULT_MODEL
+    model = (model or "").strip()
+    if not model:
+        return "error: model is required"
+    DEFAULT_MODEL = model
+    os.environ["OM_MODEL"] = model
+    return f"OM_MODEL set to {model}."
+
+
+def bash_command(command: str = "") -> str:
+    if not command:
+        return "error: command is required"
+    try:
+        result = subprocess.run(
+            ["bash", "-c", command],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        output = result.stdout
+        if result.stderr:
+            output += ("\n" if output else "") + result.stderr
+        output = output.strip()
+        return output if output else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "error: command timed out after 30 seconds"
+    except Exception as exc:  # pragma: no cover - defensive
+        return f"error: {exc}"
+
+
+TOOL_FUNCTIONS = {
+    "set_debug": set_debug_command,
+    "set_model": set_model_command,
+    "bash": bash_command,
+}
+
+COMMAND_BUILDERS = {
+    "set_debug": None,
+    "set_model": None,
+    "bash": None,
+}
+
+MODIFYING_TOOLS = {"bash"}
+
+
+def format_command_preview(tool_name: str, arguments: Mapping[str, Any]) -> Optional[str]:
+    builder = COMMAND_BUILDERS.get(tool_name)
+    if not builder:
+        return None
+    try:
+        command, error = builder(**arguments)
+    except TypeError:
+        return None
+    if error or not command:
+        return None
+    try:
+        return shlex.join(command)
+    except Exception:
+        return " ".join(command)
+
+
+def requires_confirmation(tool_name: Optional[str], arguments: Mapping[str, Any]) -> bool:
+    return tool_name in MODIFYING_TOOLS
+
+
+def prompt_for_confirmation(tool_name: str, arguments: Mapping[str, Any]) -> bool:
+    if APPROVE_ALL:
+        if DEBUG:
+            print(f"[debug] auto-approved '{tool_name}' due to approve-all mode")
+        return True
+    print(f"[confirm] The '{tool_name}' tool may modify files or system state.")
+    if arguments:
+        try:
+            pretty_args = json.dumps(arguments, indent=2)
+        except TypeError:
+            pretty_args = str(arguments)
+        print(f"[confirm] Arguments:\n{pretty_args}")
+    preview = format_command_preview(tool_name, arguments)
+    if preview:
+        print(f"[confirm] Command: {preview}")
+    while True:
+        try:
+            answer = input("Proceed? [y/N/a]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            if DEBUG:
+                print("[debug] confirmation prompt interrupted; defaulting to no")
+            return False
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("a", "all"):
+            enable_approve_all_mode()
+            return True
+        if answer in ("", "n", "no"):
+            return False
+        print("Please respond with 'y' or 'n'.")
+
+
+def append_context(message: Mapping[str, Any]) -> None:
+    if not isinstance(message, Mapping):
+        raise TypeError("context entries must be mappings")
+    role = message.get("role")
+    if not role:
+        raise ValueError("context entries must include a role")
+    content = message.get("content")
+    if isinstance(content, str) and not content.strip():
+        trimmed = content.strip()
+        message = {**message, "content": trimmed}
+    context.append(dict(message))
+
+
+def extend_context(messages: Iterable[Mapping[str, Any]]) -> None:
+    for message in messages:
+        append_context(message)
+
+
+def enable_approve_all_mode() -> None:
+    global APPROVE_ALL, PRE_APPROVE_DEBUG, DEBUG
+    if APPROVE_ALL:
+        return
+    APPROVE_ALL = True
+    PRE_APPROVE_DEBUG = DEBUG
+    if not DEBUG:
+        DEBUG = True
+        os.environ["OM_DEBUG"] = "1"
+    print("[confirm] All subsequent confirmations auto-approved for this user prompt.")
+
+
+def reset_approve_all_mode() -> None:
+    global APPROVE_ALL, PRE_APPROVE_DEBUG, DEBUG
+    if not APPROVE_ALL:
+        PRE_APPROVE_DEBUG = None
+        return
+    if PRE_APPROVE_DEBUG is not None and DEBUG != PRE_APPROVE_DEBUG:
+        DEBUG = PRE_APPROVE_DEBUG
+        os.environ["OM_DEBUG"] = "1" if DEBUG else "0"
+    APPROVE_ALL = False
+    PRE_APPROVE_DEBUG = None
+
+
+def load_user_prompt() -> Optional[str]:
+    prompt_file = os.getenv("OM_PROMPT_FILE")
+    if not prompt_file:
+        prompt_file = os.path.join(os.path.expanduser("~"), ".om_prompt")
+    try:
+        if prompt_file and os.path.isfile(prompt_file):
+            with open(prompt_file, "r", encoding="utf-8") as handle:
+                content = handle.read().strip()
+                return content or None
+    except Exception as exc:
+        if DEBUG:
+            print(f"[debug] failed to read prompt file {prompt_file}: {exc}")
+    return None
+
+
+def debug_dump_context() -> None:
+    if not DEBUG:
+        return
+    print(f"[debug] calling model with context of {len(context)} messages")
+    for idx, msg in enumerate(context):
+        role = msg.get("role", "?")
+        content = msg.get("content") or ""
+        preview = content if isinstance(content, str) else json.dumps(content)
+        if len(preview) > 80:
+            preview = preview[:77] + "..."
+        extra = ""
+        if msg.get("tool_calls"):
+            extra = f" tool_calls={len(msg['tool_calls'])}"
+        if msg.get("tool_name"):
+            extra = f" tool_name={msg['tool_name']}"
+        print(f"[debug]   {idx:02d} {role}: {preview}{extra}")
+
+
+def call_model() -> ollama.ChatResponse:
+    if client is None:
+        raise RuntimeError("ollama client is not initialized")
+    debug_dump_context()
+    try:
+        return client.chat(model=DEFAULT_MODEL, messages=context, tools=tools)
+    except (RequestError, ResponseError) as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def normalize_arguments(arguments: Any) -> Dict[str, Any]:
+    if arguments is None:
+        return {}
+    if isinstance(arguments, Mapping):
+        return dict(arguments)
+    if hasattr(arguments, "model_dump"):
+        return arguments.model_dump()
+    if hasattr(arguments, "dict"):
+        return arguments.dict()
+    if isinstance(arguments, str):
+        try:
+            return json.loads(arguments)
+        except json.JSONDecodeError:
+            return {"value": arguments}
+    try:
+        return dict(arguments)  # type: ignore[arg-type]
+    except Exception:
+        return {"value": arguments}
+
+
+def serialize_tool_call(call: ollama.Message.ToolCall) -> Dict[str, Any]:
+    function = getattr(call, "function", None)
+    name = getattr(function, "name", None)
+    arguments = normalize_arguments(getattr(function, "arguments", None))
+    return {
+        "function": {
+            "name": name,
+            "arguments": arguments,
+        }
+    }
+
+
+def execute_tool_call(call: ollama.Message.ToolCall) -> Tuple[bool, str]:
+    function = getattr(call, "function", None)
+    name = getattr(function, "name", None)
+    if not name:
+        output_text = "error: tool call missing name"
+        append_context({"role": "tool", "tool_name": "unknown", "content": output_text})
+        return False, ""
+    arguments = normalize_arguments(getattr(function, "arguments", None))
+    if requires_confirmation(name, arguments):
+        if not prompt_for_confirmation(name, arguments):
+            output_text = "cancelled by user"
+            append_context({"role": "tool", "tool_name": name, "content": output_text})
+            return True, f"Tool '{name}' execution cancelled by user."
+    handler = TOOL_FUNCTIONS.get(name)
+    if handler is None:
+        output_text = f"error: unknown tool '{name}'"
+    else:
+        try:
+            output_text = (handler(**arguments) or "").strip() or "(no output)"
+        except TypeError as exc:
+            output_text = f"error: invalid arguments - {exc}"
+        except Exception as exc:  # pragma: no cover - defensive
+            output_text = f"error: {exc}"
+    append_context({"role": "tool", "tool_name": name, "content": output_text})
+    return False, ""
+
+
+def handle_tool_calls(tool_calls: Sequence[ollama.Message.ToolCall]) -> Tuple[bool, str]:
+    for call in tool_calls:
+        cancelled, message = execute_tool_call(call)
+        if cancelled:
+            return True, message
+    return False, ""
+
+
+def process(line: str) -> str:
+    if DEBUG:
+        print(f"[debug] processing line: {line}")
+    append_context({"role": "user", "content": line})
+    printed_progress = False
+    while True:
+        if not DEBUG:
+            print(".", end="", flush=True)
+            printed_progress = True
+        try:
+            response = call_model()
+        except RuntimeError as exc:
+            if printed_progress:
+                print()
+            error_message = f"error: {exc}"
+            append_context({"role": "assistant", "content": error_message})
+            return error_message
+        message = response.message
+        if message is None:
+            if printed_progress:
+                print()
+            error_message = "error: empty response from model"
+            append_context({"role": "assistant", "content": error_message})
+            return error_message
+        assistant_content = (message.content or "").strip()
+        tool_calls = list(message.tool_calls or [])
+        assistant_entry: Dict[str, Any] = {
+            "role": message.role or "assistant",
+            "content": assistant_content,
+        }
+        if tool_calls:
+            assistant_entry["tool_calls"] = [serialize_tool_call(call) for call in tool_calls]
+        append_context(assistant_entry)
+        if tool_calls:
+            cancelled, cancel_message = handle_tool_calls(tool_calls)
+            if cancelled:
+                if printed_progress:
+                    print()
+                append_context({"role": "assistant", "content": cancel_message})
+                return cancel_message
+            continue
+        if printed_progress:
+            print()
+        if assistant_content:
+            return assistant_content
+        return "(no content)"
+
+
+def main(initial_line: Optional[str] = None) -> None:
+    try:
+        append_context({"role": "system", "content": INTERNAL_SYSTEM_PROMPT})
+        user_prompt = load_user_prompt()
+        if user_prompt:
+            append_context({"role": "system", "content": user_prompt})
+        if initial_line is not None:
+            stripped = initial_line.strip()
+            if stripped:
+                try:
+                    result = process(stripped)
+                finally:
+                    reset_approve_all_mode()
+                print(f">>> {result}\n")
+        while True:
+            line = input("> ")
+            if not line.strip():
+                continue
+            if line.strip().lower() in ("exit", "quit", "q"):
+                print("Exiting.")
+                break
+            try:
+                result = process(line)
+            finally:
+                reset_approve_all_mode()
+            print(f">>> {result}\n")
+    except EOFError:
+        print("\nInterrupted – exiting.")
+        sys.exit(0)
+    except KeyboardInterrupt:
+        print("\nInterrupted – exiting.")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    client = ollama.Client()
+    initial_line = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    main(initial_line)

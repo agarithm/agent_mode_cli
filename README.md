@@ -10,6 +10,7 @@ This repository contains command-line scripts (located in `bin/`) for interactin
 
 - **`ai`** - Bash wrapper for prompting local Ollama models on the command line
 - **`am`** - Python agent-mode CLI that uses OpenAI API and can call limited local tools (ping, sed, grep, git, curl) on your machine
+- **`om`** - Python agent-mode CLI modeled after `am`, but backed by local Ollama models (no OpenAI API key required)
 
 ## Installation
 
@@ -40,7 +41,7 @@ ai What is the capital of France?
 ai "Write a haiku about coding"
 ```
 
-### `am` - OpenAI API Wrapper
+### `am` - OpenAI API Agent Mode Wrapper
 
 Sends prompts to OpenAI's API, with the ability to execute bash commands on the **local machine**.  
 
@@ -65,3 +66,24 @@ am "Write a haiku about coding"
 ```
 
 
+
+### `om` - Ollama Agent Mode Wrapper
+
+Provides the same agent-mode experience as `am`, but routes all model calls through your local Ollama runtime. Tool calls (`bash`, `set_model`, `set_debug`) work the same way, except they are handled entirely on your machine.
+
+**Prerequisites:**
+- [Ollama](https://github.com/ollama/ollama) installed and running locally (`ollama serve`)
+- Python package: `ollama` (installed automatically via `pip install -r requirements.txt`)
+- Optional environment variables:
+  - `OM_MODEL` – overrides the default model (`llama3.2`)
+  - `OM_DEBUG` – enable verbose logs (same semantics as `AM_DEBUG`)
+  - `OM_PROMPT_FILE` – path to an additional system prompt file (defaults to `~/.om_prompt`)
+  - `OLLAMA_HOST` – point to a remote Ollama instance if desired
+
+**Usage:**
+```bash
+om What is the capital of France?
+om "List files in the current directory"
+```
+
+The agent will invoke local tools as needed. When it wants to run `bash`, you'll be asked to confirm unless you enable approve-all mode for that prompt.
