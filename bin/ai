@@ -1,6 +1,46 @@
 #!/usr/bin/env bash
 # Bash Script to call ollama model with passed in arguments
 
+LOG_PREFIX="[ai]"
+
+_detect_nvidia_gpu() {
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    return
+  fi
+  local gpu_info
+  gpu_info=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | awk 'NF { if (line) line=line", "$0; else line=$0 } END { print line }')
+  if [[ -n "$gpu_info" ]]; then
+    if [[ -z "${OLLAMA_USE_GPU:-}" ]]; then
+      export OLLAMA_USE_GPU=1
+    fi
+    if [[ -z "${OLLAMA_GPU_TYPE:-}" ]]; then
+      export OLLAMA_GPU_TYPE=cuda
+    fi
+    echo "$LOG_PREFIX Detected NVIDIA GPU: $gpu_info" >&2
+    if [[ "$gpu_info" =~ 4090 ]]; then
+      echo "$LOG_PREFIX Prioritizing RTX 4090 acceleration" >&2
+    fi
+  fi
+}
+
+_ensure_ollama_server() {
+  if [[ -n "${OLLAMA_HOST:-}" ]]; then
+    return
+  fi
+  if ollama ps >/dev/null 2>&1; then
+    return
+  fi
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f "ollama serve" >/dev/null 2>&1; then
+    return
+  fi
+  echo "$LOG_PREFIX Starting local ollama serve (GPU enabled if available)..." >&2
+  nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
+  sleep 2
+}
+
+_detect_nvidia_gpu
+_ensure_ollama_server
+
 #MODEL=deepseek-r1
 #MODEL=qwen2.5-coder
 #MODEL=qwen3
@@ -10,5 +50,4 @@
 MODEL=gpt-oss  # Very Good general purpose model
 
 ollama run $MODEL "$@, I am an expert, try to be brief and concise with examples only when appropriate" | tee /dev/tty | glow -w $(tput cols)
-
 

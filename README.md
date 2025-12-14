@@ -35,6 +35,8 @@ Sends prompts to a local Ollama installation.
 - assumes tput and tee are available in your environment
 - Default model: `gpt-oss` (can be modified in the script)
 
+`ai` automatically detects NVIDIA GPUs (including RTX 4090) when `nvidia-smi` is available, sets `OLLAMA_USE_GPU=1`/`OLLAMA_GPU_TYPE=cuda` by default, and ensures a local `ollama serve` is running before streaming your prompt.
+
 **Usage:**
 ```bash
 ai What is the capital of France?
@@ -75,10 +77,12 @@ Provides the same agent-mode experience as `am`, but routes all model calls thro
 - [Ollama](https://github.com/ollama/ollama) installed and running locally (`ollama serve`)
 - Python package: `ollama` (installed automatically via `pip install -r requirements.txt`)
 - Optional environment variables:
-  - `OM_MODEL` – overrides the default model (`llama3.2`)
+  - `OM_MODEL` – overrides the default model (`gpt-oss`)
   - `OM_DEBUG` – enable verbose logs (same semantics as `AM_DEBUG`)
   - `OM_PROMPT_FILE` – path to an additional system prompt file (defaults to `~/.om_prompt`)
   - `OLLAMA_HOST` – point to a remote Ollama instance if desired
+
+`om` now shares the same detection logic: if a local NVIDIA GPU (especially an RTX 4090) is present it enables Ollama's CUDA backend, and it will launch `ollama serve` automatically when a local daemon isn't already running.
 
 **Usage:**
 ```bash
