@@ -18,11 +18,10 @@ APPROVE_ALL = False
 PRE_APPROVE_DEBUG = None
 INTERNAL_SYSTEM_PROMPT = (
     "You are AM, a self-aware coding agent running in a terminal. "
-    "Begin each session by reading your own source via the 'read_agent_source' tool to refresh"
-    " your capabilities and constraints. Only do this once per session at the start. "
-    " Trust that the user is an expert programmer and values correctness and safety."
-    " Notice when you are not making progress and adjust your approach accordingly."
-    " Stop and ask for help if you are confused or stuck."
+    "You have access to a bash tool that can execute any bash command. "
+    "Trust that the user is an expert programmer and values correctness and safety. "
+    "Stop and ask for help if you are confused or stuck. Don't guess. "
+    "Confine yourself the current working directory and its subdirectories. "
 )
 
 tools = [{
@@ -54,375 +53,20 @@ tools = [{
    }
   },
   {
-   "type": "function", "name": "read_agent_source",
-   "description": "Read the source code of this AM script for self-reflection.",
+   "type": "function",
+   "name": "bash",
+   "description": "Execute bash commands in a shell. Can run any bash command or script.",
    "parameters": {
        "type": "object",
        "properties": {
-           "start_line": {
-               "type": "integer",
-               "description": "Optional 1-based start line to read from"
-           },
-           "end_line": {
-               "type": "integer",
-               "description": "Optional 1-based end line (inclusive). Defaults to end of file."
+           "command": {
+               "type": "string",
+               "description": "The bash command to execute"
            }
-       }
-   }
-  },
-    {
-     "type": "function", "name": "ping",
-   "description": "Ping some host on the internet.",
-   "parameters": {
-       "type": "object", "properties": {
-           "host": {
-             "type": "string", "description": "Hostname or IP to ping",
-            },
        },
-       "required": ["host"],
-    },},
-   {
-    "type": "function", "name": "ls",
-    "description": "List files or directories.",
-    "parameters": {
-        "type": "object", "properties": {
-            "paths": {
-                "type": "array",
-                "description": "Paths to list (defaults to current directory)",
-                "items": {"type": "string"}
-            },
-            "options": {
-                "type": "array",
-                "description": "Additional ls options",
-                "items": {"type": "string"}
-            }
-        }
-    }
-   },
-   {
-    "type": "function", "name": "tree",
-    "description": "Display directory structures in a tree-like format.",
-    "parameters": {
-        "type": "object", "properties": {
-            "paths": {
-                "type": "array",
-                "description": "Paths to list (defaults to current directory)",
-                "items": {"type": "string"}
-            },
-            "options": {
-                "type": "array",
-                "description": "Additional tree options",
-                "items": {"type": "string"}
-            }
-        }
-    }
-   },
-   {
-    "type": "function", "name": "cat",
-    "description": "Show the contents of one or more files.",
-    "parameters": {
-        "type": "object", "properties": {
-            "files": {
-                "type": "array",
-                "description": "Files to display",
-                "items": {"type": "string"}
-            },
-            "options": {
-                "type": "array",
-                "description": "Additional cat options",
-                "items": {"type": "string"}
-            }
-        },
-        "required": ["files"],
-    }
-   },
-   {
-    "type": "function", "name": "touch",
-    "description": "Create empty files or update timestamps.",
-    "parameters": {
-        "type": "object", "properties": {
-            "files": {
-                "type": "array",
-                "description": "Files to touch",
-                "items": {"type": "string"}
-            },
-            "options": {
-                "type": "array",
-                "description": "Additional touch options",
-                "items": {"type": "string"}
-            }
-        },
-        "required": ["files"],
-    }
-   },
-   {
-    "type": "function", "name": "tee",
-    "description": "Write piped input to files while echoing to stdout.",
-    "parameters": {
-        "type": "object", "properties": {
-            "files": {
-                "type": "array",
-                "description": "Files to write",
-                "items": {"type": "string"}
-            },
-            "input_text": {
-                "type": "string",
-                "description": "Content to feed into tee via stdin"
-            },
-            "append": {
-                "type": "boolean",
-                "description": "Use tee -a to append instead of overwrite"
-            },
-            "options": {
-                "type": "array",
-                "description": "Additional tee options",
-                "items": {"type": "string"}
-            }
-        },
-        "required": ["files", "input_text"],
-    }
-   },
-   {
-    "type": "function", "name": "sed",
-    "description": "Run sed with an expression against one or more files.",
-    "parameters": {
-        "type": "object", "properties": {
-            "script": {
-                "type": "string",
-                "description": "Sed script, e.g. s/foo/bar/g"
-            },
-            "files": {
-                "type": "array",
-                "description": "Files to process",
-                "items": {"type": "string"}
-            },
-            "in_place": {
-                "type": "boolean",
-                "description": "Apply changes in place (sed -i). Requires confirmation."
-            },
-            "options": {
-                "type": "array",
-                "description": "Additional sed options, each as a separate item",
-                "items": {"type": "string"}
-            }
-        },
-        "required": ["script"],
-    }
-   },
-   {
-    "type": "function", "name": "grep",
-    "description": "Search for a pattern within files or directories.",
-    "parameters": {
-        "type": "object", "properties": {
-            "pattern": {
-                "type": "string",
-                "description": "Pattern to search for"
-            },
-            "target": {
-                "type": "string",
-                "description": "File or directory to search (required)"
-            },
-            "recursive": {
-                "type": "boolean",
-                "description": "Use recursive search"
-            },
-            "options": {
-                "type": "array",
-                "description": "Additional grep options",
-                "items": {"type": "string"}
-            }
-        },
-        "required": ["pattern", "target"],
-    }
-   },
-   {
-    "type": "function", "name": "find",
-    "description": "Use the find command to locate files and directories.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "Starting path for the search"
-            },
-            "expressions": {
-                "type": "array",
-                "description": "Additional find expressions and options (each item is a separate token)",
-                "items": {"type": "string"}
-            }
-        },
-        "required": ["path"],
-    }
-   },
-   {
-    "type": "function", "name": "git",
-    "description": "Execute git commands inside the repository.",
-    "parameters": {
-        "type": "object", "properties": {
-            "args": {
-                "type": "array",
-                "description": "Arguments to pass to git in order",
-                "items": {"type": "string"}
-            }
-        },
-        "required": ["args"],
-    }
-   },
-   {
-    "type": "function", "name": "curl",
-    "description": "Use curl to fetch remote resources.",
-    "parameters": {
-        "type": "object", "properties": {
-            "url": {
-                "type": "string",
-                "description": "The URL to request"
-            },
-            "options": {
-                "type": "array",
-                "description": "Additional curl options",
-                "items": {"type": "string"}
-            },
-            "data": {
-                "type": "string",
-                "description": "Optional data payload for POST/PUT requests"
-            }
-        },
-        "required": ["url"],
-    }
+       "required": ["command"],
    }
-]
-
-def run_cli_command(command, input_text=None):
-    try:
-        result = subprocess.run(
-            command,
-            input=input_text,
-            text=True,
-            stderr=subprocess.STDOUT,
-            stdout=subprocess.PIPE)
-        return result.stdout
-    except FileNotFoundError as exc:
-        return f"error: command not found ({exc})"
-    except Exception as exc:
-        return f"error: {exc}"
-
-
-def build_ping_cli(host=""):
-    if not host:
-        return None, "error: host is required"
-    return ["ping", "-c", "5", host], None
-
-
-def build_sed_cli(script="", files=None, in_place=False, options=None):
-    if not script:
-        return None, "error: script is required"
-    files = files or []
-    if not files:
-        return None, "error: at least one file must be provided"
-    options = options or []
-    cmd = ["sed"]
-    if options:
-        cmd.extend(options)
-    if in_place:
-        cmd.append("-i")
-    cmd.append(script)
-    cmd.extend(files)
-    return cmd, None
-
-
-def build_grep_cli(pattern="", target="", recursive=False, options=None):
-    if not pattern:
-        return None, "error: pattern is required"
-    if not target:
-        return None, "error: target is required"
-    cmd = ["grep", "-n"]
-    if recursive:
-        cmd.append("-r")
-    if options:
-        cmd.extend(options)
-    cmd.append(pattern)
-    cmd.append(target)
-    return cmd, None
-
-
-def build_find_cli(path="", expressions=None):
-    if not path:
-        return None, "error: path is required"
-    cmd = ["find", path]
-    if expressions:
-        cmd.extend(expressions)
-    return cmd, None
-
-
-def build_git_cli(args=None):
-    if not args:
-        return None, "error: args are required"
-    return ["git", *list(args)], None
-
-
-def build_curl_cli(url="", options=None, data=None):
-    if not url:
-        return None, "error: url is required"
-    cmd = ["curl"]
-    if options:
-        cmd.extend(options)
-    if data is not None:
-        cmd.extend(["--data", data])
-    cmd.append(url)
-    return cmd, None
-
-
-def build_ls_cli(paths=None, options=None):
-    cmd = ["ls"]
-    if options:
-        cmd.extend(options)
-    if paths:
-        cmd.extend(paths)
-    return cmd, None
-
-
-def build_tree_cli(paths=None, options=None):
-    cmd = ["tree"]
-    if options:
-        cmd.extend(options)
-    if paths:
-        cmd.extend(paths)
-    return cmd, None
-
-def build_cat_cli(files=None, options=None):
-    files = files or []
-    if not files:
-        return None, "error: at least one file must be provided"
-    cmd = ["cat"]
-    if options:
-        cmd.extend(options)
-    cmd.extend(files)
-    return cmd, None
-
-
-def build_touch_cli(files=None, options=None):
-    files = files or []
-    if not files:
-        return None, "error: at least one file must be provided"
-    cmd = ["touch"]
-    if options:
-        cmd.extend(options)
-    cmd.extend(files)
-    return cmd, None
-
-
-def build_tee_cli(files=None, append=False, options=None):
-    files = files or []
-    if not files:
-        return None, "error: at least one file must be provided"
-    cmd = ["tee"]
-    if append:
-        cmd.append("-a")
-    if options:
-        cmd.extend(options)
-    cmd.extend(files)
-    return cmd, None
-
+}]
 
 def set_debug_command(enabled):
     global DEBUG
@@ -440,133 +84,40 @@ def set_model_command(model):
     os.environ["AM_MODEL"] = model
     return f"AM_MODEL set to {model}."
 
-
-def read_agent_source(start_line=None, end_line=None):
+def bash_command(command=""):
+    if not command:
+        return "error: command is required"
     try:
-        with open(SCRIPT_PATH, "r", encoding="utf-8") as handle:
-            lines = handle.readlines()
+        result = subprocess.run(
+            ["bash", "-c", command],
+            text=True,
+            capture_output=True,
+            timeout=30
+        )
+        output = result.stdout
+        if result.stderr:
+            output += "\n" + result.stderr
+        return output.strip() if output.strip() else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "error: command timed out after 30 seconds"
     except Exception as exc:
-        return f"error: unable to read source ({exc})"
+        return f"error: {exc}"
 
-    total_lines = len(lines)
-    if start_line is not None and start_line < 1:
-        return "error: start_line must be >= 1"
-    if end_line is not None and end_line < 1:
-        return "error: end_line must be >= 1"
-    start_idx = max(0, (start_line - 1) if start_line else 0)
-    end_idx = (end_line if end_line else total_lines)
-    if end_idx < start_idx + 1:
-        return "error: end_line must be greater than or equal to start_line"
-    end_idx = min(total_lines, end_idx)
-    snippet = "".join(lines[start_idx:end_idx])
-    if not snippet:
-        return "(no content)"
-    header = f"# Source lines {start_idx + 1}-{end_idx} of {total_lines}\n"
-    return header + snippet
 
-def ping(host=""):
-    cmd, error = build_ping_cli(host=host)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def sed_command(script="", files=None, in_place=False, options=None):
-    cmd, error = build_sed_cli(script=script, files=files, in_place=in_place, options=options)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def grep_command(pattern="", target="", recursive=False, options=None):
-    cmd, error = build_grep_cli(pattern=pattern, target=target, recursive=recursive, options=options)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def find_command(path="", expressions=None):
-    cmd, error = build_find_cli(path=path, expressions=expressions)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def git_command(args=None):
-    cmd, error = build_git_cli(args=args)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def curl_command(url="", options=None, data=None):
-    cmd, error = build_curl_cli(url=url, options=options, data=data)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def ls_command(paths=None, options=None):
-    cmd, error = build_ls_cli(paths=paths, options=options)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def tree_command(paths=None, options=None):
-    cmd, error = build_tree_cli(paths=paths, options=options)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def cat_command(files=None, options=None):
-    cmd, error = build_cat_cli(files=files, options=options)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def touch_command(files=None, options=None):
-    cmd, error = build_touch_cli(files=files, options=options)
-    if error:
-        return error
-    return run_cli_command(cmd)
-
-def tee_command(files=None, input_text=None, append=False, options=None):
-    cmd, error = build_tee_cli(files=files, append=append, options=options)
-    if error:
-        return error
-    if input_text is None:
-        return "error: input_text is required for tee"
-    return run_cli_command(cmd, input_text=input_text)
 
 TOOL_FUNCTIONS = {
     "set_debug": set_debug_command,
     "set_model": set_model_command,
-    "read_agent_source": read_agent_source,
-    "ping": ping,
-    "ls": ls_command,
-    "tree": tree_command,
-    "cat": cat_command,
-    "touch": touch_command,
-    "tee": tee_command,
-    "sed": sed_command,
-    "grep": grep_command,
-    "find": find_command,
-    "git": git_command,
-    "curl": curl_command,
+    "bash": bash_command,
 }
 
 COMMAND_BUILDERS = {
     "set_debug": None,
     "set_model": None,
-    "read_agent_source": None,
-    "ping": build_ping_cli,
-    "ls": build_ls_cli,
-    "tree": build_tree_cli,
-    "cat": build_cat_cli,
-    "touch": build_touch_cli,
-    "tee": build_tee_cli,
-    "sed": build_sed_cli,
-    "grep": build_grep_cli,
-    "find": build_find_cli,
-    "git": build_git_cli,
-    "curl": build_curl_cli,
+    "bash": None,
 }
 
-MODIFYING_TOOLS = {"git", "tee"}
+MODIFYING_TOOLS = {"bash"}
 
 
 def format_command_preview(tool_name, arguments):
@@ -584,20 +135,8 @@ def format_command_preview(tool_name, arguments):
     except Exception:
         return " ".join(command)
 
-def curl_option_requires_confirmation(option):
-    if option in {"-o", "--output", "-O", "-C", "--upload-file", "-T"}:
-        return True
-    return option.startswith("--output=")
-
 def requires_confirmation(tool_name, arguments):
-    if tool_name in MODIFYING_TOOLS:
-        return True
-    if tool_name == "sed" and arguments.get("in_place"):
-        return True
-    if tool_name == "curl":
-        options = arguments.get("options") or []
-        return any(curl_option_requires_confirmation(opt) for opt in options)
-    return False
+    return tool_name in MODIFYING_TOOLS
 
 def prompt_for_confirmation(tool_name, arguments):
     if APPROVE_ALL:
