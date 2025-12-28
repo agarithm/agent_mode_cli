@@ -1,94 +1,103 @@
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
 import sys
-from typing import Optional
 
-from agent_mode_cli.core.ollama_runtime import prepare_runtime
+import ollama
+
+from agent_mode_cli.core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl_multi_provider
 from agent_mode_cli.core.cli_help import handle_common_flags
+from agent_mode_cli.core.ollama_adapter import OllamaProviderAdapter
+from agent_mode_cli.core.ollama_runtime import prepare_runtime
+from agent_mode_cli.core.openai_adapter import OpenAIProviderAdapter
+from agent_mode_cli.core.openai_runtime import create_openai_client
+from agent_mode_cli.core.system_prompt import build_internal_system_prompt
+from agent_mode_cli.core.tool_specs import build_ollama_tools, build_openai_tools
 
 
-LOG_PREFIX = "[ai]"
-DEFAULT_MODEL = os.getenv("AI_MODEL", "gpt-oss")
+INTERNAL_SYSTEM_PROMPT = build_internal_system_prompt("AI")
 
 
-def _terminal_width() -> int:
-    try:
-        return shutil.get_terminal_size().columns
-    except Exception:
-        return 80
-
-
-def _run_with_optional_glow(cmd: list[str]) -> int:
-    glow = shutil.which("glow")
-    if not glow:
-        proc = subprocess.Popen(cmd)
-        return int(proc.wait())
-
-    glow_cmd = [glow, "-w", str(_terminal_width())]
-    ollama_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    glow_proc = subprocess.Popen(glow_cmd, stdin=subprocess.PIPE)
-
-    assert ollama_proc.stdout is not None
-    assert glow_proc.stdin is not None
-
-    try:
-        for chunk in iter(lambda: ollama_proc.stdout.read(4096), b""):
-            try:
-                sys.stdout.buffer.write(chunk)
-                sys.stdout.buffer.flush()
-            except Exception:
-                pass
-            try:
-                glow_proc.stdin.write(chunk)
-                glow_proc.stdin.flush()
-            except BrokenPipeError:
-                pass
-        return int(ollama_proc.wait())
-    finally:
-        try:
-            glow_proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            glow_proc.wait(timeout=2)
-        except Exception:
-            pass
-
-
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from agent_mode_cli import __version__
 
+    debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
+    default_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
+    default_ollama_model = os.getenv("AI_MODEL", "gpt-oss")
+
     flag_exit = handle_common_flags(
         argv,
-        usage="ai <prompt...>",
-        description="Zero-shot prompt runner backed by Ollama.",
+        usage="ai [prompt...]",
+        description=(
+            "Agent-mode CLI (full REPL) with dynamic provider switching. "
+            "Default provider is Ollama (local)."
+        ),
         env_lines=(
-            "AI_MODEL        optional (default: gpt-oss)",
+            "AI_PROVIDER     optional (default: ollama)",
+            "AI_MODEL        optional (default: gpt-oss; applies to current provider)",
+            "AI_DEBUG        optional (1/true enables debug)",
+            "AI_PROMPT_FILE  optional (default: ~/.ai_prompt)",
+            "OPENAI_API_KEY  required for OpenAI provider",
             "OLLAMA_HOST     optional (use remote Ollama)",
         ),
         version=__version__,
     )
     if flag_exit is not None:
         return flag_exit
-    if not argv:
-        print("usage: ai <prompt...>")
-        return 2
+
+    initial_line = " ".join(argv) if argv else None
+
+    def _create_ollama_adapter() -> OllamaProviderAdapter:
+        client = ollama.Client()
+        return OllamaProviderAdapter(client=client)
+
+    def _create_openai_adapter() -> OpenAIProviderAdapter:
+        client = create_openai_client()
+        return OpenAIProviderAdapter(client=client)
+
+    providers = {
+        "ollama": ProviderEntry(
+            name="ollama",
+            description="Local Ollama (default)",
+            default_model=default_ollama_model,
+            build_tools=build_ollama_tools,
+            create_adapter=_create_ollama_adapter,
+            prepare_runtime=lambda debug: prepare_runtime(debug=debug, log_prefix="[ai]"),
+        ),
+        "openai": ProviderEntry(
+            name="openai",
+            description="OpenAI (requires OPENAI_API_KEY)",
+            default_model=os.getenv("AI_OPENAI_MODEL", "gpt-5.1-codex"),
+            build_tools=build_openai_tools,
+            create_adapter=_create_openai_adapter,
+            prepare_runtime=None,
+        ),
+    }
+
+    runner_config = AgentRunnerConfig(
+        agent_name="AI",
+        env_prefix="AI",
+        debug_env="AI_DEBUG",
+        model_env="AI_MODEL",
+        initial_debug=debug,
+        initial_model=default_ollama_model,
+        prompt_file_env="AI_PROMPT_FILE",
+        prompt_file_default=".ai_prompt",
+        internal_system_prompt=INTERNAL_SYSTEM_PROMPT,
+        catch_runtime_errors=True,
+    )
 
     try:
-        prepare_runtime(debug=False, log_prefix=LOG_PREFIX)
-    except RuntimeError as exc:
+        return run_agent_repl_multi_provider(
+            providers=providers,
+            initial_provider=default_provider,
+            config=runner_config,
+            initial_line=initial_line,
+        )
+    except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    prompt = " ".join(argv)
-    prompt += ", I am an expert, try to be brief and concise with examples only when appropriate"
-
-    cmd = ["ollama", "run", DEFAULT_MODEL, prompt]
-    return _run_with_optional_glow(cmd)
 
 
 if __name__ == "__main__":

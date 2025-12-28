@@ -1,1 +1,1 @@
-"""ai CLI implementation (zero-shot via Ollama)."""
+"""ai CLI implementation (agent-mode REPL with provider switching)."""

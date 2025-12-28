@@ -1,1 +1,1 @@
-"""am CLI implementation (OpenAI-backed agent mode)."""
+"""am compatibility wrapper (defaults unified `ai` REPL to OpenAI)."""

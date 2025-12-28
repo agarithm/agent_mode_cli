@@ -1,1 +1,1 @@
-"""om CLI implementation (Ollama-backed agent mode)."""
+"""om compatibility wrapper (defaults unified `ai` REPL to Ollama)."""

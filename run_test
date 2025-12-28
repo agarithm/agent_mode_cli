@@ -19,6 +19,11 @@ def _find_repo_root(start: Path) -> Path | None:
 
 def _usage() -> None:
     print("usage: ./run_test <ai|am|om> [args...]", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("tools:", file=sys.stderr)
+    print("  ai  unified agent REPL (multi-provider; default Ollama)", file=sys.stderr)
+    print("  am  compatibility alias (defaults provider to OpenAI)", file=sys.stderr)
+    print("  om  compatibility alias (defaults provider to Ollama)", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
