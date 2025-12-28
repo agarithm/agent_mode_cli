@@ -37,7 +37,24 @@ def requires_confirmation(tool_name: Optional[str]) -> bool:
 def prompt_for_confirmation(tool_name: str, arguments: Mapping[str, Any], state: ConfirmState) -> bool:
     if state.approve_all:
         if state.debug:
-            print(f"[debug] auto-approved '{tool_name}' due to approve-all mode")
+            if tool_name == "bash":
+                cmd = None
+                try:
+                    cmd = arguments.get("command")  # type: ignore[attr-defined]
+                except Exception:
+                    cmd = None
+                if isinstance(cmd, str) and cmd.strip():
+                    print(f"[debug] auto-approved 'bash' (approve-all): {cmd}")
+                else:
+                    print("[debug] auto-approved 'bash' (approve-all)")
+            else:
+                print(f"[debug] auto-approved '{tool_name}' due to approve-all mode")
+                if arguments:
+                    try:
+                        pretty_args = json.dumps(dict(arguments), indent=2)
+                    except TypeError:
+                        pretty_args = str(arguments)
+                    print(f"[debug] arguments:\n{pretty_args}")
         return True
     print(f"[confirm] The '{tool_name}' tool may modify files or system state.")
     if arguments:
