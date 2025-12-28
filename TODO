@@ -1,0 +1,39 @@
+1. **Deduplicate the OpenAI vs. Ollama CLIs**
+   - `src/agent_mode_cli/am/app.py` and `src/agent_mode_cli/om/app.py` re-implement the same plumbing (confirm state, tool registry, REPL integration, context seeding) with only small differences. Consider extracting a reusable “agent runner” that accepts a provider adapter (OpenAI vs. Ollama) so that bug fixes and new features land once.
+
+2. **Add regression tests**
+   - Nothing under `src/agent_mode_cli/core/` is covered by tests. Unit tests for:
+     - `process_line_with_tools` (iteration, cancellation, final text handling).
+     - `UniversalContext` conversions (`to_openai_responses_input`, `to_ollama_chat_messages`).
+     - `ConfirmState` and `prompt_for_confirmation`.
+     - `web_fetch` (e.g., truncation, header normalization) and `bash_command` (timeout, stderr merging).
+   - A pytest suite plus CI (GitHub Actions) would protect against future regressions.
+
+3. **Static analysis / style tooling**
+   - Add `ruff`/`flake8` and `mypy` (or `pyright`) to catch issues like unused imports, inconsistent typing, or accidental string/bytes mistakes—important in networking-heavy code like `web_fetch` and `js_web_fetch`.
+
+4. **Guard against infinite tool loops**
+   - `process_line_with_tools` loops until the model stops calling tools. Misbehaving models could loop forever. Add a `max_tool_iterations` or watchdog timer so the CLI can bail out gracefully with a user-visible error.
+
+5. **Improve Playwright resource handling**
+   - `js_web_fetch` creates both a browser and a context but only closes the browser. Explicitly closing the context (and catching failures) avoids warnings and resource leaks. Also consider surfacing whether Playwright/Chromium is missing earlier (maybe during startup) or packaging `playwright` as an optional extra so the base install is lighter.
+
+6. **Build script efficiency**
+   - `build_one()` currently re-reads and embeds **all** sources three times (once per CLI). Refactor to collect sources once per invocation and reuse the result for `ai`, `am`, and `om` to keep build time predictable as the repo grows.
+
+7. **Optional dependency management**
+   - `requirements.txt` forces `playwright` on every install even though only `js_web_fetch` needs it. Consider a `pyproject.toml` with extras, e.g., `pip install agent-mode-cli[js]` to pull Playwright, keeping the default install lightweight.
+
+8. **Polish the UX & logging**
+   - Provide verbose logging flags for `ai` similar to `am`/`om`.
+   - Consider structured logging or timestamps when `AM_DEBUG`/`OM_DEBUG` is set to help diagnose hangs.
+   - `ai` automatically appends “I am an expert…” to the prompt (see `src/agent_mode_cli/ai/app.py`). Expose that as a flag or remove it so the CLI doesn’t silently mutate user prompts.
+
+9. **Add packaging metadata**
+   - Publishing a `pyproject.toml` with version, dependencies, and entry points would let users `pip install` the CLI directly without cloning the repo. It also enables tools like `pipx` or Homebrew to package the binaries reliably.
+
+10. **Documentation gaps**
+    - Add a security section describing confirmation gating, recommended sandboxing, and how to disable tools if desired.
+    - Document `js_web_fetch`’s Playwright prerequisites directly in the usage docs for `am`/`om`, not just near the end of the README.
+
+Addressing the above will make the codebase easier to maintain, safer to extend, and friendlier to contributors and end users. Happy to dive deeper on any specific item.:wqa
