@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
+
+
+@dataclass
+class ConfirmState:
+    approve_all: bool = False
+    debug: bool = False
+    _pre_approve_debug: Optional[bool] = None
+
+    def enable_approve_all(self) -> None:
+        if self.approve_all:
+            return
+        self.approve_all = True
+        self._pre_approve_debug = self.debug
+        if not self.debug:
+            self.debug = True
+        print("[confirm] All subsequent confirmations auto-approved for this user prompt.")
+
+    def reset_after_prompt(self) -> None:
+        if not self.approve_all:
+            self._pre_approve_debug = None
+            return
+        if self._pre_approve_debug is not None and self.debug != self._pre_approve_debug:
+            self.debug = self._pre_approve_debug
+        self.approve_all = False
+        self._pre_approve_debug = None
+
+
+def requires_confirmation(tool_name: Optional[str]) -> bool:
+    return tool_name in {"bash"}
+
+
+def prompt_for_confirmation(tool_name: str, arguments: Mapping[str, Any], state: ConfirmState) -> bool:
+    if state.approve_all:
+        if state.debug:
+            print(f"[debug] auto-approved '{tool_name}' due to approve-all mode")
+        return True
+    print(f"[confirm] The '{tool_name}' tool may modify files or system state.")
+    if arguments:
+        try:
+            pretty_args = json.dumps(dict(arguments), indent=2)
+        except TypeError:
+            pretty_args = str(arguments)
+        print(f"[confirm] Arguments:\n{pretty_args}")
+    while True:
+        try:
+            answer = input("Proceed? [y/N/a]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            if state.debug:
+                print("[debug] confirmation prompt interrupted; defaulting to no")
+            return False
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("a", "all"):
+            state.enable_approve_all()
+            return True
+        if answer in ("", "n", "no"):
+            return False
+        print("Please respond with 'y' or 'n'.")
