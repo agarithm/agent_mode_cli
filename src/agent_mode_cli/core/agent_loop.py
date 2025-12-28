@@ -41,7 +41,7 @@ def process_line_with_tools(
     call_model: Callable[[], Any],
     parse_response: Callable[[Any], ParseResult],
     execute_tool_call: Callable[[ToolCallInfo], Tuple[Sequence[ChatMessage], Optional[str]]],
-    max_tool_iterations: int = 25,
+    max_tool_iterations: int = 100,
     max_tool_seconds: Optional[float] = None,
 ) -> str:
     append_context(ChatMessage(role="user", content=line))

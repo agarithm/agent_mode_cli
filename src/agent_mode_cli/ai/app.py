@@ -5,7 +5,7 @@ import sys
 
 import ollama
 
-from agent_mode_cli.core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl_multi_provider
+from agent_mode_cli.core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl
 from agent_mode_cli.core.cli_help import handle_common_flags
 from agent_mode_cli.core.ollama_adapter import OllamaProviderAdapter
 from agent_mode_cli.core.ollama_runtime import prepare_runtime
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        return run_agent_repl_multi_provider(
+        return run_agent_repl(
             providers=providers,
             initial_provider=default_provider,
             config=runner_config,
