@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from agent_mode_cli.core.universal_context import ChatMessage
+
 
 @dataclass(frozen=True)
 class ToolCallInfo:
@@ -16,7 +18,7 @@ class ToolCallInfo:
 @dataclass(frozen=True)
 class ParseResult:
     tool_calls: Sequence[ToolCallInfo]
-    context_entries: Sequence[Any]
+    context_entries: Sequence[ChatMessage]
     final_text: Optional[str]
 
 
@@ -34,12 +36,12 @@ def process_line_with_tools(
     line: str,
     *,
     debug: bool,
-    append_context: Callable[[Any], None],
+    append_context: Callable[[ChatMessage], None],
     call_model: Callable[[], Any],
     parse_response: Callable[[Any], ParseResult],
-    execute_tool_call: Callable[[ToolCallInfo], Tuple[Sequence[Any], Optional[str]]],
+    execute_tool_call: Callable[[ToolCallInfo], Tuple[Sequence[ChatMessage], Optional[str]]],
 ) -> str:
-    append_context({"role": "user", "content": line})
+    append_context(ChatMessage(role="user", content=line))
     printed_progress = False
 
     while True:
@@ -68,5 +70,5 @@ def process_line_with_tools(
         if cancelled_message:
             if printed_progress:
                 print()
-            append_context({"role": "assistant", "content": cancelled_message})
+            append_context(ChatMessage(role="assistant", content=cancelled_message))
             return cancelled_message

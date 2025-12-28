@@ -7,6 +7,7 @@ import sys
 from typing import Optional
 
 from agent_mode_cli.core.ollama_runtime import prepare_runtime
+from agent_mode_cli.core.cli_help import handle_common_flags
 
 
 LOG_PREFIX = "[ai]"
@@ -59,15 +60,20 @@ def _run_with_optional_glow(cmd: list[str]) -> int:
 
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in ("-h", "--help"):
-        print("usage: ai <prompt...>")
-        print("\nZero-shot prompt runner backed by Ollama.")
-        return 0
-    if argv and argv[0] == "--version":
-        from agent_mode_cli import __version__
+    from agent_mode_cli import __version__
 
-        print(__version__)
-        return 0
+    flag_exit = handle_common_flags(
+        argv,
+        usage="ai <prompt...>",
+        description="Zero-shot prompt runner backed by Ollama.",
+        env_lines=(
+            "AI_MODEL        optional (default: gpt-oss)",
+            "OLLAMA_HOST     optional (use remote Ollama)",
+        ),
+        version=__version__,
+    )
+    if flag_exit is not None:
+        return flag_exit
     if not argv:
         print("usage: ai <prompt...>")
         return 2

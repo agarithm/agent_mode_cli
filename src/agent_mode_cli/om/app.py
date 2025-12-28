@@ -10,7 +10,9 @@ from ollama import Client, RequestError, ResponseError
 
 from agent_mode_cli.core.bash_tool import bash_command
 from agent_mode_cli.core.agent_loop import ParseResult, ToolCallInfo, process_line_with_tools
+from agent_mode_cli.core.cli_help import handle_common_flags
 from agent_mode_cli.core.confirm import ConfirmState, prompt_for_confirmation, requires_confirmation
+from agent_mode_cli.core.universal_context import ChatMessage, ToolCall, UniversalContext, to_ollama_chat_messages
 from agent_mode_cli.core.ollama_runtime import prepare_runtime
 from agent_mode_cli.core.prompt_file import load_user_prompt
 from agent_mode_cli.core.repl import run_repl
@@ -47,19 +49,21 @@ def main(argv: list[str] | None = None) -> int:
     global DEBUG, DEFAULT_MODEL
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in ("-h", "--help"):
-        print("usage: om <prompt...>")
-        print("\nAgent-mode CLI backed by Ollama.\n")
-        print("env:")
-        print("  OM_MODEL        optional (default: gpt-oss)")
-        print("  OM_DEBUG        optional (1/true enables debug)")
-        print("  OLLAMA_HOST     optional (use remote Ollama)")
-        return 0
-    if argv and argv[0] == "--version":
-        from agent_mode_cli import __version__
+    from agent_mode_cli import __version__
 
-        print(__version__)
-        return 0
+    flag_exit = handle_common_flags(
+        argv,
+        usage="om <prompt...>",
+        description="Agent-mode CLI backed by Ollama.",
+        env_lines=(
+            "OM_MODEL        optional (default: gpt-oss)",
+            "OM_DEBUG        optional (1/true enables debug)",
+            "OLLAMA_HOST     optional (use remote Ollama)",
+        ),
+        version=__version__,
+    )
+    if flag_exit is not None:
+        return flag_exit
     initial_line = " ".join(argv) if argv else None
 
     try:
@@ -69,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     client: Optional[Client] = ollama.Client()
-    context: list[dict[str, Any]] = []
+    context = UniversalContext()
     tools = build_ollama_tools("OM")
     state = ConfirmState(approve_all=False, debug=DEBUG)
 
@@ -96,34 +100,24 @@ def main(argv: list[str] | None = None) -> int:
         "bash": lambda command="": bash_command(command),
     }
 
-    def append_context(message: Mapping[str, Any]) -> None:
-        role = message.get("role")
-        if not role:
-            raise ValueError("context entries must include a role")
-        content = message.get("content")
-        if isinstance(content, str) and not content.strip():
-            message = {**message, "content": content.strip()}
-        context.append(dict(message))
-
-    def extend_context(messages: Iterable[Mapping[str, Any]]) -> None:
-        for msg in messages:
-            append_context(msg)
+    def append_context(message: ChatMessage) -> None:
+        context.append(message, debug=DEBUG)
 
     def debug_dump_context() -> None:
         if not DEBUG:
             return
         print(f"[debug] calling model with context of {len(context)} messages")
-        for idx, msg in enumerate(context):
-            role = msg.get("role", "?")
-            content = msg.get("content") or ""
+        for idx, msg in enumerate(context.messages):
+            role = msg.role or "?"
+            content = msg.content or ""
             preview = content if isinstance(content, str) else json.dumps(content)
             if len(preview) > 80:
                 preview = preview[:77] + "..."
             extra = ""
-            if msg.get("tool_calls"):
-                extra = f" tool_calls={len(msg['tool_calls'])}"
-            if msg.get("tool_name"):
-                extra = f" tool_name={msg['tool_name']}"
+            if msg.tool_calls:
+                extra = f" tool_calls={len(msg.tool_calls)}"
+            if msg.tool_name:
+                extra = f" tool_name={msg.tool_name}"
             print(f"[debug]   {idx:02d} {role}: {preview}{extra}")
 
     def call_model() -> ollama.ChatResponse:
@@ -131,79 +125,47 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("ollama client is not initialized")
         debug_dump_context()
         try:
-            return client.chat(model=DEFAULT_MODEL, messages=context, tools=tools)
+            return client.chat(model=DEFAULT_MODEL, messages=to_ollama_chat_messages(context.messages), tools=tools)
         except (RequestError, ResponseError) as exc:
             raise RuntimeError(str(exc)) from exc
-
-    def serialize_tool_call(call: ollama.Message.ToolCall) -> Dict[str, Any]:
-        function = getattr(call, "function", None)
-        name = getattr(function, "name", None)
-        arguments = normalize_arguments(getattr(function, "arguments", None))
-        return {"function": {"name": name, "arguments": arguments}}
-
-    def execute_tool_call(call: ollama.Message.ToolCall) -> Tuple[bool, str]:
-        function = getattr(call, "function", None)
-        name = getattr(function, "name", None)
-        if not name:
-            output_text = "error: tool call missing name"
-            append_context({"role": "tool", "tool_name": "unknown", "content": output_text})
-            return False, ""
-        arguments = normalize_arguments(getattr(function, "arguments", None))
-        if requires_confirmation(name):
-            if not prompt_for_confirmation(name, arguments, state):
-                output_text = "cancelled by user"
-                append_context({"role": "tool", "tool_name": name, "content": output_text})
-                return True, f"Tool '{name}' execution cancelled by user."
-        handler = TOOL_FUNCTIONS.get(name)
-        if handler is None:
-            output_text = f"error: unknown tool '{name}'"
-        else:
-            try:
-                output_text = (handler(**arguments) or "").strip() or "(no output)"
-            except TypeError as exc:
-                output_text = f"error: invalid arguments - {exc}"
-            except Exception as exc:
-                output_text = f"error: {exc}"
-        append_context({"role": "tool", "tool_name": name, "content": output_text})
-        return False, ""
-
-    def handle_tool_calls(tool_calls: Sequence[ollama.Message.ToolCall]) -> Tuple[bool, str]:
-        for call in tool_calls:
-            cancelled, message = execute_tool_call(call)
-            if cancelled:
-                return True, message
-        return False, ""
 
     def parse_response(response: ollama.ChatResponse) -> ParseResult:
         message = response.message
         if message is None:
-            return ParseResult(tool_calls=[], context_entries=[{"role": "assistant", "content": "error: empty response from model"}], final_text="error: empty response from model")
+            error_text = "error: empty response from model"
+            return ParseResult(tool_calls=[], context_entries=[ChatMessage(role="assistant", content=error_text)], final_text=error_text)
         assistant_content = (message.content or "").strip()
         raw_tool_calls = list(message.tool_calls or [])
 
-        assistant_entry: Dict[str, Any] = {"role": message.role or "assistant", "content": assistant_content}
-        tool_calls: List[ToolCallInfo] = []
+        tool_calls: list[ToolCallInfo] = []
+        assistant_tool_calls: list[ToolCall] = []
         if raw_tool_calls:
-            assistant_entry["tool_calls"] = [serialize_tool_call(call) for call in raw_tool_calls]
-            for call in raw_tool_calls:
+            for idx, call in enumerate(raw_tool_calls):
                 function = getattr(call, "function", None)
                 name = getattr(function, "name", None)
                 if not name:
                     continue
                 arguments = normalize_arguments(getattr(function, "arguments", None))
-                tool_calls.append(ToolCallInfo(name=name, arguments=arguments, raw=call))
+                call_id = f"call_{idx}"  # Ollama tool calls do not expose a stable call_id
+                tool_calls.append(ToolCallInfo(name=name, arguments=arguments, raw=None, call_id=call_id))
+                assistant_tool_calls.append(ToolCall(name=name, arguments=arguments, call_id=call_id))
+
+        assistant_entry = ChatMessage(
+            role=message.role or "assistant",
+            content=assistant_content,
+            tool_calls=assistant_tool_calls or None,
+        )
 
         final_text = assistant_content or "(no content)"
         return ParseResult(tool_calls=tool_calls, context_entries=[assistant_entry], final_text=final_text)
 
-    def execute_tool_call_info(call: ToolCallInfo) -> Tuple[Sequence[Any], Optional[str]]:
+    def execute_tool_call_info(call: ToolCallInfo) -> Tuple[Sequence[ChatMessage], Optional[str]]:
         name = call.name
         arguments = call.arguments
         if requires_confirmation(name):
             if not prompt_for_confirmation(name, arguments, state):
                 output_text = "cancelled by user"
-                append_context({"role": "tool", "tool_name": name, "content": output_text})
-                return ([], f"Tool '{name}' execution cancelled by user.")
+                return ([ChatMessage(role="tool", content=output_text, tool_name=name, tool_call_id=call.call_id)], f"Tool '{name}' execution cancelled by user.")
         handler = TOOL_FUNCTIONS.get(name)
         if handler is None:
             output_text = f"error: unknown tool '{name}'"
@@ -214,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_text = f"error: invalid arguments - {exc}"
             except Exception as exc:
                 output_text = f"error: {exc}"
-        return ([{"role": "tool", "tool_name": name, "content": output_text}], None)
+        return ([ChatMessage(role="tool", content=output_text, tool_name=name, tool_call_id=call.call_id)], None)
 
     def process(line: str) -> str:
         if DEBUG:
@@ -230,14 +192,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         except RuntimeError as exc:
             error_message = f"error: {exc}"
-            append_context({"role": "assistant", "content": error_message})
+            append_context(ChatMessage(role="assistant", content=error_message))
             return error_message
 
     def before_first_prompt() -> None:
-        append_context({"role": "system", "content": INTERNAL_SYSTEM_PROMPT})
+        append_context(ChatMessage(role="system", content=INTERNAL_SYSTEM_PROMPT))
         user_prompt = load_user_prompt("OM_PROMPT_FILE", ".om_prompt", debug=DEBUG)
         if user_prompt:
-            append_context({"role": "system", "content": user_prompt})
+            append_context(ChatMessage(role="system", content=user_prompt))
 
     return run_repl(
         initial_line=initial_line,

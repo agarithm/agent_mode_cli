@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -44,17 +45,17 @@ def prompt_for_confirmation(tool_name: str, arguments: Mapping[str, Any], state:
                 except Exception:
                     cmd = None
                 if isinstance(cmd, str) and cmd.strip():
-                    print(f"[debug] auto-approved 'bash' (approve-all): {cmd}")
+                    print(f"[debug] auto-approved 'bash' (approve-all): {cmd}", file=sys.stderr)
                 else:
-                    print("[debug] auto-approved 'bash' (approve-all)")
+                    print("[debug] auto-approved 'bash' (approve-all)", file=sys.stderr)
             else:
-                print(f"[debug] auto-approved '{tool_name}' due to approve-all mode")
+                print(f"[debug] auto-approved '{tool_name}' due to approve-all mode", file=sys.stderr)
                 if arguments:
                     try:
                         pretty_args = json.dumps(dict(arguments), indent=2)
                     except TypeError:
                         pretty_args = str(arguments)
-                    print(f"[debug] arguments:\n{pretty_args}")
+                    print(f"[debug] arguments:\n{pretty_args}", file=sys.stderr)
         return True
     print(f"[confirm] The '{tool_name}' tool may modify files or system state.")
     if arguments:
