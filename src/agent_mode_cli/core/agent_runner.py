@@ -13,6 +13,7 @@ from agent_mode_cli.core.repl import run_repl
 from agent_mode_cli.core.universal_context import ChatMessage, UniversalContext
 from agent_mode_cli.core.web_fetch import web_fetch
 from agent_mode_cli.core.provider_adapter import ProviderAdapter
+from agent_mode_cli.core.runtime_settings import RuntimeSettings
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,8 @@ class AgentRunnerConfig:
     prompt_file_default: str
     internal_system_prompt: str
     catch_runtime_errors: bool = False
+    max_tool_iterations: int = 25
+    max_tool_seconds: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -48,32 +51,18 @@ def run_agent_repl(
     config: AgentRunnerConfig,
     initial_line: Optional[str],
 ) -> int:
-    debug = bool(config.initial_debug)
+    settings = RuntimeSettings(
+        debug=bool(config.initial_debug),
+        max_tool_iterations=int(config.max_tool_iterations),
+        max_tool_seconds=config.max_tool_seconds,
+    )
     model = (config.initial_model or "").strip()
 
     context = UniversalContext()
     tools = list(build_tools(config.env_prefix))
-    state = ConfirmState(approve_all=False, debug=debug)
-
-    def set_debug_command(enabled: bool) -> str:
-        nonlocal debug
-        debug = bool(enabled)
-        os.environ[config.debug_env] = "1" if debug else "0"
-        state.debug = debug
-        return f"{config.debug_env} {'enabled' if debug else 'disabled'}."
-
-    def set_model_command(model_name: str) -> str:
-        nonlocal model
-        model_name = (model_name or "").strip()
-        if not model_name:
-            return "error: model is required"
-        model = model_name
-        os.environ[config.model_env] = model
-        return f"{config.model_env} set to {model}."
+    state = ConfirmState(approve_all=False, debug=settings.debug)
 
     tool_functions: Dict[str, Callable[..., str]] = {
-        "set_debug": set_debug_command,
-        "set_model": set_model_command,
         "bash": lambda command="": bash_command(command),
         "web_fetch": lambda url="", timeout_seconds=20, max_bytes=1500000, extract_text=True, max_chars=20000, headers=None: web_fetch(
             url,
@@ -94,17 +83,17 @@ def run_agent_repl(
     }
 
     def append_context(message: ChatMessage) -> None:
-        context.append(message, debug=debug)
+        context.append(message, debug=settings.debug)
 
     def call_model() -> Any:
         active_model = (model or "").strip() or (config.initial_model or "").strip()
-        return adapter.call_model(model=active_model, tools=tools, context=context, debug=debug)
+        return adapter.call_model(model=active_model, tools=tools, context=context, debug=settings.debug)
 
     def parse_response(response: Any):
-        return adapter.parse_response(response, debug=debug)
+        return adapter.parse_response(response, debug=settings.debug)
 
     def execute_tool_call(call: ToolCallInfo) -> Tuple[Sequence[ChatMessage], Optional[str]]:
-        if debug:
+        if settings.debug:
             print(f"[debug] executing tool: {call.name}")
 
         if requires_confirmation(call.name):
@@ -128,28 +117,89 @@ def run_agent_repl(
 
         return ([ChatMessage(role="tool", content=output_text, tool_name=call.name, tool_call_id=call.call_id)], None)
 
+    def set_model_command(model_name: str) -> str:
+        nonlocal model
+        model_name = (model_name or "").strip()
+        if not model_name:
+            return "error: model name is required"
+        model = model_name
+        os.environ[config.model_env] = model
+        return f"{config.model_env} set to {model}."
+
+    def _help_text() -> str:
+        return "\n".join(
+            [
+                "Commands:",
+                "- help | :help                 Show this help.",
+                "- settings | :settings         Show current settings.",
+                "- debug <on|off>               Toggle debug logging.",
+                "- model <name>                 Set model for this session.",
+                "- max_tool_iterations <n>       Max tool-loop iterations per prompt.",
+                "- max_tool_seconds <sec|off>    Max wall-clock seconds in tool loop.",
+                "- quit | q | exit               Exit the REPL.",
+                "",
+                "Notes:",
+                "- Settings are per-process; they reset when you restart.",
+                "- In multi-provider mode (ai), use `providers` / `use <name>` to switch providers.",
+            ]
+        )
+
     def process(line: str) -> str:
-        if debug:
+        if settings.debug:
             print(f"[debug] processing line: {line}")
+
+        raw = (line or "").strip()
+        lowered = raw.lower().strip()
+
+        if lowered in {"help", ":help", "?", ":?", "commands", ":commands"}:
+            return _help_text()
+
+        if lowered in {"settings", ":settings", "limits", ":limits"}:
+            model_text = model or (config.initial_model or "")
+            return settings.format() + f"\n- model: {model_text}"
+
+        for prefix in ("debug ", ":debug "):
+            if lowered.startswith(prefix):
+                result = settings.set_debug_from_text(raw[len(prefix) :])
+                os.environ[config.debug_env] = "1" if settings.debug else "0"
+                state.debug = settings.debug
+                return result
+
+        for prefix in ("model ", ":model "):
+            if lowered.startswith(prefix):
+                new_model = raw[len(prefix) :].strip()
+                return set_model_command(new_model)
+
+        for prefix in ("max_tool_iterations ", ":max_tool_iterations "):
+            if lowered.startswith(prefix):
+                return settings.set_max_tool_iterations_from_text(raw[len(prefix) :])
+
+        for prefix in ("max_tool_seconds ", ":max_tool_seconds "):
+            if lowered.startswith(prefix):
+                return settings.set_max_tool_seconds_from_text(raw[len(prefix) :])
 
         if not config.catch_runtime_errors:
             return process_line_with_tools(
                 line,
-                debug=debug,
+                debug=settings.debug,
                 append_context=append_context,
                 call_model=call_model,
                 parse_response=parse_response,
                 execute_tool_call=execute_tool_call,
+                max_tool_iterations=settings.max_tool_iterations,
+                max_tool_seconds=settings.max_tool_seconds,
             )
 
         try:
             return process_line_with_tools(
                 line,
-                debug=debug,
+                debug=settings.debug,
                 append_context=append_context,
                 call_model=call_model,
                 parse_response=parse_response,
                 execute_tool_call=execute_tool_call,
+                max_tool_iterations=settings.max_tool_iterations,
+                max_tool_seconds=settings.max_tool_seconds,
             )
         except RuntimeError as exc:
             error_message = f"error: {exc}"
@@ -158,7 +208,7 @@ def run_agent_repl(
 
     def before_first_prompt() -> None:
         append_context(ChatMessage(role="system", content=config.internal_system_prompt))
-        user_prompt = load_user_prompt(config.prompt_file_env, config.prompt_file_default, debug=debug)
+        user_prompt = load_user_prompt(config.prompt_file_env, config.prompt_file_default, debug=settings.debug)
         if user_prompt:
             append_context(ChatMessage(role="system", content=user_prompt))
 
@@ -192,7 +242,11 @@ def run_agent_repl_multi_provider(
         available = ", ".join(sorted(providers.keys()))
         raise ValueError(f"unknown provider '{provider_key}'. Available: {available}")
 
-    debug = bool(config.initial_debug)
+    settings = RuntimeSettings(
+        debug=bool(config.initial_debug),
+        max_tool_iterations=int(config.max_tool_iterations),
+        max_tool_seconds=config.max_tool_seconds,
+    )
     # Model is tracked per-provider so switching doesn't inherit a nonsense model name.
     models_by_provider: Dict[str, str] = {
         key: (entry.default_model or "").strip() for key, entry in providers.items()
@@ -204,7 +258,7 @@ def run_agent_repl_multi_provider(
         models_by_provider[provider_key] = (config.initial_model or "").strip()
 
     context = UniversalContext()
-    state = ConfirmState(approve_all=False, debug=debug)
+    state = ConfirmState(approve_all=False, debug=settings.debug)
 
     adapter_cache: Dict[str, ProviderAdapter] = {}
 
@@ -217,7 +271,7 @@ def run_agent_repl_multi_provider(
             return adapter_cache[name]
         entry = providers[name]
         if entry.prepare_runtime is not None:
-            entry.prepare_runtime(debug)
+            entry.prepare_runtime(settings.debug)
         adapter_cache[name] = entry.create_adapter()
         return adapter_cache[name]
 
@@ -237,24 +291,7 @@ def run_agent_repl_multi_provider(
 
     _apply_active_provider(active_provider)
 
-    def set_debug_command(enabled: bool) -> str:
-        nonlocal debug
-        debug = bool(enabled)
-        os.environ[config.debug_env] = "1" if debug else "0"
-        state.debug = debug
-        return f"{config.debug_env} {'enabled' if debug else 'disabled'}."
-
-    def set_model_command(model: str) -> str:
-        model = (model or "").strip()
-        if not model:
-            return "error: model is required"
-        models_by_provider[active_provider] = model
-        os.environ[config.model_env] = model
-        return f"{config.model_env} set to {model}."
-
     tool_functions: Dict[str, Callable[..., str]] = {
-        "set_debug": set_debug_command,
-        "set_model": set_model_command,
         "bash": lambda command="": bash_command(command),
         "web_fetch": lambda url="", timeout_seconds=20, max_bytes=1500000, extract_text=True, max_chars=20000, headers=None: web_fetch(
             url,
@@ -275,19 +312,19 @@ def run_agent_repl_multi_provider(
     }
 
     def append_context(message: ChatMessage) -> None:
-        context.append(message, debug=debug)
+        context.append(message, debug=settings.debug)
 
     def call_model() -> Any:
         active_model = (models_by_provider.get(active_provider) or "").strip()
         if not active_model:
             active_model = (providers[active_provider].default_model or "").strip()
-        return active_adapter.call_model(model=active_model, tools=active_tools, context=context, debug=debug)
+        return active_adapter.call_model(model=active_model, tools=active_tools, context=context, debug=settings.debug)
 
     def parse_response(response: Any):
-        return active_adapter.parse_response(response, debug=debug)
+        return active_adapter.parse_response(response, debug=settings.debug)
 
     def execute_tool_call(call: ToolCallInfo) -> Tuple[Sequence[ChatMessage], Optional[str]]:
-        if debug:
+        if settings.debug:
             print(f"[debug] executing tool: {call.name}")
 
         if requires_confirmation(call.name):
@@ -321,11 +358,42 @@ def run_agent_repl_multi_provider(
             lines.append(f"- {key}{current}: {entry.description}{model_part}")
         return "\n".join(lines)
 
+    def _format_settings() -> str:
+        lines: list[str] = [settings.format()]
+        model = (models_by_provider.get(active_provider) or providers[active_provider].default_model or "").strip()
+        lines.append(f"- provider: {active_provider}")
+        if model:
+            lines.append(f"- model: {model}")
+        return "\n".join(lines)
+
+    def _help_text() -> str:
+        return "\n".join(
+            [
+                "Commands:",
+                "- help | :help                 Show this help.",
+                "- providers | :providers        List available providers.",
+                "- use <name> | :use <name>      Switch provider for this session.",
+                "- settings | :settings          Show current settings.",
+                "- debug <on|off>                Toggle debug logging.",
+                "- model <name>                  Set model for the current provider.",
+                "- max_tool_iterations <n>        Max tool-loop iterations per prompt.",
+                "- max_tool_seconds <sec|off>     Max wall-clock seconds in tool loop.",
+                "- quit | q | exit                Exit the REPL.",
+                "",
+                "Notes:",
+                "- Model is tracked per provider; switching providers keeps history.",
+                "- Settings are per-process; they reset when you restart.",
+            ]
+        )
+
     def _try_handle_local_command(line: str) -> Optional[str]:
         raw = (line or "").strip()
         if not raw:
             return None
         lowered = raw.lower().strip()
+
+        if lowered in {"help", ":help", "?", ":?", "commands", ":commands"}:
+            return _help_text()
 
         if lowered in {"providers", "list providers", ":providers", ":list providers"}:
             return _format_providers()
@@ -342,10 +410,37 @@ def run_agent_repl_multi_provider(
                 # Tell the model too, so it knows future tool schemas may differ.
                 append_context(ChatMessage(role="system", content=f"Provider switched to {active_provider}."))
                 return f"Using provider: {active_provider}"
+
+        if lowered in {"settings", ":settings", "limits", ":limits"}:
+            return _format_settings()
+
+        for prefix in ("debug ", ":debug "):
+            if lowered.startswith(prefix):
+                result = settings.set_debug_from_text(raw[len(prefix) :])
+                os.environ[config.debug_env] = "1" if settings.debug else "0"
+                state.debug = settings.debug
+                return result
+
+        for prefix in ("model ", ":model "):
+            if lowered.startswith(prefix):
+                new_model = raw[len(prefix) :].strip()
+                if not new_model:
+                    return "error: model name is required"
+                models_by_provider[active_provider] = new_model
+                os.environ[config.model_env] = new_model
+                return f"{config.model_env} set to {new_model}."
+
+        for prefix in ("max_tool_iterations ", ":max_tool_iterations "):
+            if lowered.startswith(prefix):
+                return settings.set_max_tool_iterations_from_text(raw[len(prefix) :])
+
+        for prefix in ("max_tool_seconds ", ":max_tool_seconds "):
+            if lowered.startswith(prefix):
+                return settings.set_max_tool_seconds_from_text(raw[len(prefix) :])
         return None
 
     def process(line: str) -> str:
-        if debug:
+        if settings.debug:
             print(f"[debug] processing line: {line}")
 
         local_result = _try_handle_local_command(line)
@@ -355,21 +450,25 @@ def run_agent_repl_multi_provider(
         if not config.catch_runtime_errors:
             return process_line_with_tools(
                 line,
-                debug=debug,
+                debug=settings.debug,
                 append_context=append_context,
                 call_model=call_model,
                 parse_response=parse_response,
                 execute_tool_call=execute_tool_call,
+                max_tool_iterations=settings.max_tool_iterations,
+                max_tool_seconds=settings.max_tool_seconds,
             )
 
         try:
             return process_line_with_tools(
                 line,
-                debug=debug,
+                debug=settings.debug,
                 append_context=append_context,
                 call_model=call_model,
                 parse_response=parse_response,
                 execute_tool_call=execute_tool_call,
+                max_tool_iterations=settings.max_tool_iterations,
+                max_tool_seconds=settings.max_tool_seconds,
             )
         except RuntimeError as exc:
             error_message = f"error: {exc}"
@@ -378,7 +477,7 @@ def run_agent_repl_multi_provider(
 
     def before_first_prompt() -> None:
         append_context(ChatMessage(role="system", content=config.internal_system_prompt))
-        user_prompt = load_user_prompt(config.prompt_file_env, config.prompt_file_default, debug=debug)
+        user_prompt = load_user_prompt(config.prompt_file_env, config.prompt_file_default, debug=settings.debug)
         if user_prompt:
             append_context(ChatMessage(role="system", content=user_prompt))
         append_context(ChatMessage(role="system", content=f"Provider switched to {active_provider}."))

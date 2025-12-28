@@ -7,34 +7,6 @@ def _raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
     prefix = (prefix or "").strip().upper()
     return [
         {
-            "name": "set_debug",
-            "description": f"Toggle {prefix}_DEBUG on or off.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Whether debugging should be enabled.",
-                    }
-                },
-                "required": ["enabled"],
-            },
-        },
-        {
-            "name": "set_model",
-            "description": f"Change the {prefix}_MODEL used for future API calls.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "model": {
-                        "type": "string",
-                        "description": "Model identifier to use.",
-                    }
-                },
-                "required": ["model"],
-            },
-        },
-        {
             "name": "bash",
             "description": "Execute bash commands in a shell. Can run any bash command or script.",
             "parameters": {

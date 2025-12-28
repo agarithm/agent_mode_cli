@@ -87,8 +87,17 @@ Note: `bin/` is a deployment target (generated files). Don’t hand-edit deploye
 
 **Provider switching commands (local, not sent to the model):**
 
+- `help` (or `:help`) – show REPL commands and settings knobs
 - `providers` (or `:providers`) – list available providers
 - `use <name>` (or `:use <name>`) – switch provider (e.g. `use openai`)
+
+Other local settings commands:
+
+- `settings` (or `:settings`) – show current settings
+- `debug on|off` – toggle debug logging
+- `model <name>` – set the model for the current provider
+- `max_tool_iterations <n>` – set the tool-loop iteration watchdog
+- `max_tool_seconds <sec|off>` – set the tool-loop time watchdog
 
 **Usage:**
 ```bash

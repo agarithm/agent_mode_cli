@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -40,11 +41,41 @@ def process_line_with_tools(
     call_model: Callable[[], Any],
     parse_response: Callable[[Any], ParseResult],
     execute_tool_call: Callable[[ToolCallInfo], Tuple[Sequence[ChatMessage], Optional[str]]],
+    max_tool_iterations: int = 25,
+    max_tool_seconds: Optional[float] = None,
 ) -> str:
     append_context(ChatMessage(role="user", content=line))
     printed_progress = False
 
+    if max_tool_iterations <= 0:
+        max_tool_iterations = 1
+    start = time.monotonic()
+    iterations = 0
+
     while True:
+        iterations += 1
+        if iterations > max_tool_iterations:
+            if printed_progress:
+                print()
+            error_text = (
+                "error: exceeded max tool iterations "
+                f"({max_tool_iterations}). The model may be stuck in a tool loop."
+            )
+            append_context(ChatMessage(role="assistant", content=error_text))
+            return error_text
+
+        if max_tool_seconds is not None and max_tool_seconds > 0:
+            elapsed = time.monotonic() - start
+            if elapsed > max_tool_seconds:
+                if printed_progress:
+                    print()
+                error_text = (
+                    "error: exceeded tool-loop time budget "
+                    f"({max_tool_seconds:.1f}s). The model may be stuck in a tool loop."
+                )
+                append_context(ChatMessage(role="assistant", content=error_text))
+                return error_text
+
         if not debug:
             print(".", end="", flush=True)
             printed_progress = True
