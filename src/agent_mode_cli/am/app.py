@@ -15,6 +15,8 @@ from agent_mode_cli.core.prompt_file import load_user_prompt
 from agent_mode_cli.core.repl import run_repl
 from agent_mode_cli.core.system_prompt import build_internal_system_prompt
 from agent_mode_cli.core.tool_specs import build_openai_tools
+from agent_mode_cli.core.web_fetch import web_fetch
+from agent_mode_cli.core.js_web_fetch import js_web_fetch
 
 
 DEBUG = os.getenv("AM_DEBUG", "").lower() in ("1", "true", "yes", "on")
@@ -72,6 +74,22 @@ def main(argv: list[str] | None = None) -> int:
         "set_debug": set_debug_command,
         "set_model": set_model_command,
         "bash": lambda command="": bash_command(command),
+        "web_fetch": lambda url="", timeout_seconds=20, max_bytes=1500000, extract_text=True, max_chars=20000, headers=None: web_fetch(
+            url,
+            timeout_seconds=timeout_seconds,
+            max_bytes=max_bytes,
+            extract_text=extract_text,
+            max_chars=max_chars,
+            headers=headers,
+        ),
+        "js_web_fetch": lambda url="", timeout_seconds=30, wait_until="networkidle", extract_text=True, max_chars=20000, user_agent=None: js_web_fetch(
+            url,
+            timeout_seconds=timeout_seconds,
+            wait_until=wait_until,
+            extract_text=extract_text,
+            max_chars=max_chars,
+            user_agent=user_agent,
+        ),
     }
 
     def append_context(message: ChatMessage) -> None:

@@ -96,6 +96,11 @@ ai "Write a haiku about coding"
 
 Sends prompts to OpenAI, with the ability to execute bash commands on the **local machine**.
 
+In addition to `bash`, the agent also has web retrieval tools:
+
+- `web_fetch` – lightweight HTTP(S) fetch (no JavaScript), with basic HTML-to-text extraction
+- `js_web_fetch` – JavaScript-enabled fetch via Playwright/Chromium (use when `web_fetch` is insufficient)
+
 **Danger:** This tool can execute arbitrary bash commands on your local machine. Prefer using it in a container/VM.
 
 **Prerequisites:**
@@ -150,3 +155,11 @@ Use the dev wrapper script to run the tools directly from `src/` (no `dist/` bui
 ```
 
 Tip: this wrapper is named `run_test` to avoid conflicts with the `test` shell builtin.
+
+## Browser Tooling Notes
+
+If you want `js_web_fetch` to work, you need Playwright’s Chromium installed (in addition to the Python package):
+
+```bash
+python -m playwright install chromium
+```
