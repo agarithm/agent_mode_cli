@@ -125,6 +125,13 @@ Runs the unified `ai` REPL with the provider preselected to **OpenAI**.
 
 In addition to `bash`, the agent also has web retrieval tools:
 
+- `list_dir` – safe directory listing within the current working directory (read-only)
+- `read_file` – safe file reading within the current working directory (read-only)
+- `file_metadata` – safe metadata for files/dirs (read-only)
+- `git_status` / `git_diff` – safe git inspection helpers (read-only)
+- `write_file` – write file contents within the current working directory (guarded / requires confirmation)
+- `edit_file` – structured file editing within the current working directory (guarded / requires confirmation)
+
 - `web_fetch` – lightweight HTTP(S) fetch (no JavaScript), with basic HTML-to-text extraction
 - `js_web_fetch` – JavaScript-enabled fetch via Playwright/Chromium (use when `web_fetch` is insufficient)
 

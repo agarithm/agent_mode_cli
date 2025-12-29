@@ -8,7 +8,10 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 from agent_mode_cli.core.agent_loop import ToolCallInfo, process_line_with_tools
 from agent_mode_cli.tools import bash_command
 from agent_mode_cli.core.confirm import ConfirmState, prompt_for_confirmation, requires_confirmation
+from agent_mode_cli.tools import edit_file, write_file
+from agent_mode_cli.tools import file_metadata, git_diff, git_status
 from agent_mode_cli.tools import js_web_fetch
+from agent_mode_cli.tools import list_dir, read_file
 from agent_mode_cli.core.prompt_file import load_user_prompt
 from agent_mode_cli.core.repl import run_repl
 from agent_mode_cli.core.universal_context import ChatMessage, UniversalContext
@@ -144,6 +147,41 @@ def run_agent_repl(
     _apply_active_provider(active_provider)
 
     tool_functions: Dict[str, Callable[..., str]] = {
+        "list_dir": lambda path=".", recursive=False, max_depth=2, max_entries=2000: list_dir(
+            path,
+            recursive=recursive,
+            max_depth=max_depth,
+            max_entries=max_entries,
+        ),
+        "read_file": lambda path, offset=0, length=None: read_file(
+            path,
+            offset=offset,
+            length=length,
+        ),
+        "file_metadata": lambda path: file_metadata(path),
+        "git_status": lambda max_chars=40000: git_status(max_chars=max_chars),
+        "git_diff": lambda paths=None, staged=False, include_untracked=True, max_untracked_files=20, max_untracked_file_bytes=200000, max_chars=40000: git_diff(
+            paths,
+            staged=staged,
+            include_untracked=include_untracked,
+            max_untracked_files=max_untracked_files,
+            max_untracked_file_bytes=max_untracked_file_bytes,
+            max_chars=max_chars,
+        ),
+        "write_file": lambda path, content, mode="overwrite", offset=0, dry_run=False, make_backup=True: write_file(
+            path,
+            content,
+            mode=mode,
+            offset=offset,
+            dry_run=dry_run,
+            make_backup=make_backup,
+        ),
+        "edit_file": lambda path, edits, dry_run=False, make_backup=True: edit_file(
+            path,
+            edits,
+            dry_run=dry_run,
+            make_backup=make_backup,
+        ),
         "bash": lambda command="": bash_command(command),
         "web_fetch": lambda url="", timeout_seconds=20, max_bytes=1500000, extract_text=True, max_chars=20000, headers=None: web_fetch(
             url,
