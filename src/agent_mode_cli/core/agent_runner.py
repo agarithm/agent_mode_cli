@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -12,7 +13,7 @@ from agent_mode_cli.core.prompt_file import load_user_prompt
 from agent_mode_cli.core.repl import run_repl
 from agent_mode_cli.core.universal_context import ChatMessage, UniversalContext
 from agent_mode_cli.core.web_fetch import web_fetch
-from agent_mode_cli.providers.base import ProviderAdapter
+from agent_mode_cli.providers.base import ProviderAdapter, ProviderRateLimitError
 from agent_mode_cli.core.runtime_settings import RuntimeSettings
 
 
@@ -42,6 +43,7 @@ class ProviderEntry:
     build_tools: Callable[[str], Sequence[Dict[str, Any]]]
     create_adapter: Callable[[], ProviderAdapter]
     prepare_runtime: Optional[Callable[[bool], None]] = None
+    fallback_providers: Sequence[str] = ()
 
 
 def run_agent_repl(
@@ -87,8 +89,12 @@ def run_agent_repl(
     adapter_cache: Dict[str, ProviderAdapter] = {}
 
     active_provider = provider_key
+    preferred_provider = provider_key
     active_adapter: ProviderAdapter
     active_tools: Sequence[Dict[str, Any]]
+
+    rate_limited_until: Dict[str, float] = {}
+    default_retry_after_seconds = float(os.getenv("AI_FALLBACK_DEFAULT_RETRY_AFTER", "300") or "300")
 
     def _get_or_create_adapter(name: str) -> ProviderAdapter:
         if name in adapter_cache:
@@ -112,6 +118,28 @@ def run_agent_repl(
         active_model = (models_by_provider.get(active_provider) or "").strip()
         if active_model:
             os.environ[config.model_env] = active_model
+
+    def _is_rate_limited(name: str) -> bool:
+        until = rate_limited_until.get(name)
+        if not until:
+            return False
+        return time.monotonic() < until
+
+    def _remaining_rate_limit_seconds(name: str) -> Optional[float]:
+        until = rate_limited_until.get(name)
+        if not until:
+            return None
+        remaining = until - time.monotonic()
+        return remaining if remaining > 0 else 0.0
+
+    def _maybe_resume_preferred_provider() -> None:
+        nonlocal active_provider
+        if active_provider == preferred_provider:
+            return
+        if _is_rate_limited(preferred_provider):
+            return
+        _apply_active_provider(preferred_provider)
+        _announce_active_provider_and_model("preferred provider available again")
 
     _apply_active_provider(active_provider)
 
@@ -143,6 +171,25 @@ def run_agent_repl(
         if not active_model:
             active_model = (providers[active_provider].default_model or "").strip()
         return active_adapter.call_model(model=active_model, tools=active_tools, context=context, debug=settings.debug)
+
+    def _active_model_for(name: str) -> str:
+        model = (models_by_provider.get(name) or "").strip()
+        if not model:
+            model = (providers[name].default_model or "").strip()
+        return model
+
+    def _announce_active_provider_and_model(reason: str) -> None:
+        model = _active_model_for(active_provider)
+        suffix = f" ({reason})" if reason else ""
+        append_context(
+            ChatMessage(
+                role="system",
+                content=(
+                    f"Active provider: {active_provider}. Active model: {model}.{suffix} "
+                    "If asked which model you are, answer with the active model identifier above."
+                ),
+            )
+        )
 
     def parse_response(response: Any):
         return active_adapter.parse_response(response, debug=settings.debug)
@@ -195,13 +242,13 @@ def run_agent_repl(
             [
                 "Commands:",
                 "- help | :help                 Show this help.",
-                "- providers | :providers        List available providers.",
-                "- use <name> | :use <name>      Switch provider for this session.",
-                "- settings | :settings          Show current settings.",
-                "- debug <on|off>                Toggle debug logging.",
-                "- model <name>                  Set model for the current provider.",
-                "- max_tool_iterations <n>        Max tool-loop iterations per prompt.",
-                "- max_tool_seconds <sec|off>     Max wall-clock seconds in tool loop.",
+                "- :providers                    List available providers.",
+                "- :use <name>                   Switch provider for this session.",
+                "- :settings                     Show current settings.",
+                "- :debug <on|off>               Toggle debug logging.",
+                "- :model <name>                 Set model for the current provider.",
+                "- :max_tool_iterations <n>       Max tool-loop iterations per prompt.",
+                "- :max_tool_seconds <sec|off>    Max wall-clock seconds in tool loop.",
                 "- quit | q | exit                Exit the REPL.",
                 "",
                 "Notes:",
@@ -211,6 +258,7 @@ def run_agent_repl(
         )
 
     def _try_handle_local_command(line: str) -> Optional[str]:
+        nonlocal preferred_provider
         raw = (line or "").strip()
         if not raw:
             return None
@@ -219,10 +267,10 @@ def run_agent_repl(
         if lowered in {"help", ":help", "?", ":?", "commands", ":commands"}:
             return _help_text()
 
-        if lowered in {"providers", "list providers", ":providers", ":list providers"}:
+        if lowered in {":providers", ":list providers"}:
             return _format_providers()
 
-        for prefix in ("use provider ", "use ", ":use ", ":provider ", "provider "):
+        for prefix in (":use ", ":provider "):
             if lowered.startswith(prefix):
                 target = raw[len(prefix) :].strip()
                 if not target:
@@ -231,34 +279,35 @@ def run_agent_repl(
                     _apply_active_provider(target)
                 except Exception as exc:
                     return f"error: {exc}"
-                # Tell the model too, so it knows future tool schemas may differ.
-                append_context(ChatMessage(role="system", content=f"Provider switched to {active_provider}."))
+                preferred_provider = active_provider
+                _announce_active_provider_and_model("user requested")
                 return f"Using provider: {active_provider}"
 
-        if lowered in {"settings", ":settings", "limits", ":limits"}:
+        if lowered in {":settings", ":limits"}:
             return _format_settings()
 
-        for prefix in ("debug ", ":debug "):
+        for prefix in (":debug ",):
             if lowered.startswith(prefix):
                 result = settings.set_debug_from_text(raw[len(prefix) :])
                 os.environ[config.debug_env] = "1" if settings.debug else "0"
                 state.debug = settings.debug
                 return result
 
-        for prefix in ("model ", ":model "):
+        for prefix in (":model ",):
             if lowered.startswith(prefix):
                 new_model = raw[len(prefix) :].strip()
                 if not new_model:
                     return "error: model name is required"
                 models_by_provider[active_provider] = new_model
                 os.environ[config.model_env] = new_model
+                _announce_active_provider_and_model("user requested")
                 return f"{config.model_env} set to {new_model}."
 
-        for prefix in ("max_tool_iterations ", ":max_tool_iterations "):
+        for prefix in (":max_tool_iterations ",):
             if lowered.startswith(prefix):
                 return settings.set_max_tool_iterations_from_text(raw[len(prefix) :])
 
-        for prefix in ("max_tool_seconds ", ":max_tool_seconds "):
+        for prefix in (":max_tool_seconds ",):
             if lowered.startswith(prefix):
                 return settings.set_max_tool_seconds_from_text(raw[len(prefix) :])
         return None
@@ -266,6 +315,8 @@ def run_agent_repl(
     def process(line: str) -> str:
         if settings.debug:
             print(f"[debug] processing line: {line}")
+
+        _maybe_resume_preferred_provider()
 
         local_result = _try_handle_local_command(line)
         if local_result is not None:
@@ -283,28 +334,85 @@ def run_agent_repl(
                 max_tool_seconds=settings.max_tool_seconds,
             )
 
-        try:
-            return process_line_with_tools(
-                line,
-                debug=settings.debug,
-                append_context=append_context,
-                call_model=call_model,
-                parse_response=parse_response,
-                execute_tool_call=execute_tool_call,
-                max_tool_iterations=settings.max_tool_iterations,
-                max_tool_seconds=settings.max_tool_seconds,
-            )
-        except RuntimeError as exc:
-            error_message = f"error: {exc}"
-            append_context(ChatMessage(role="assistant", content=error_message))
-            return error_message
+        suppress_next_user_append = False
+
+        def append_context_maybe_suppress(message: ChatMessage) -> None:
+            nonlocal suppress_next_user_append
+            if suppress_next_user_append and message.role == "user" and message.content == line:
+                suppress_next_user_append = False
+                return
+            append_context(message)
+
+        while True:
+            try:
+                return process_line_with_tools(
+                    line,
+                    debug=settings.debug,
+                    append_context=append_context_maybe_suppress,
+                    call_model=call_model,
+                    parse_response=parse_response,
+                    execute_tool_call=execute_tool_call,
+                    max_tool_iterations=settings.max_tool_iterations,
+                    max_tool_seconds=settings.max_tool_seconds,
+                )
+
+            except ProviderRateLimitError as exc:
+                if _handle_provider_rate_limit(exc):
+                    suppress_next_user_append = True
+                    continue
+                remaining = _remaining_rate_limit_seconds(preferred_provider)
+                message = f"error: rate limit on {exc.provider}"
+                if remaining:
+                    message += f" (preferred provider retry in ~{remaining:.1f}s)"
+                append_context(ChatMessage(role="assistant", content=message))
+                return message
+            except RuntimeError as exc:
+                error_message = f"error: {exc}"
+                append_context(ChatMessage(role="assistant", content=error_message))
+                return error_message
+
+    def _handle_provider_rate_limit(error: ProviderRateLimitError) -> bool:
+        """Handle a provider 429 by switching providers.
+
+        Returns True if a new provider was selected and the caller should retry.
+        Returns False if no alternatives are available.
+        """
+
+        nonlocal active_provider
+
+        retry_after = error.retry_after
+        if retry_after is None or retry_after <= 0:
+            retry_after = default_retry_after_seconds
+
+        rate_limited_until[active_provider] = time.monotonic() + float(retry_after)
+
+        current_entry = providers[active_provider]
+        fallbacks = list(current_entry.fallback_providers or ())
+        if not fallbacks:
+            return False
+
+        for candidate in fallbacks:
+            candidate = (candidate or "").strip().lower()
+            if not candidate or candidate == active_provider:
+                continue
+            if candidate not in providers:
+                continue
+            if _is_rate_limited(candidate):
+                continue
+
+            _apply_active_provider(candidate)
+            _announce_active_provider_and_model(f"failover from rate-limited provider '{error.provider}'")
+            return True
+
+        return False
+
 
     def before_first_prompt() -> None:
         append_context(ChatMessage(role="system", content=config.internal_system_prompt))
         user_prompt = load_user_prompt(config.prompt_file_env, config.prompt_file_default, debug=settings.debug)
         if user_prompt:
             append_context(ChatMessage(role="system", content=user_prompt))
-        append_context(ChatMessage(role="system", content=f"Provider switched to {active_provider}."))
+        _announce_active_provider_and_model("session start")
 
     return run_repl(
         initial_line=initial_line,

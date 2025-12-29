@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Sequence
 
 from agent_mode_cli.core.agent_loop import ParseResult, ToolCallInfo, safe_json_loads
 from agent_mode_cli.core.universal_context import ChatMessage, ToolCall, UniversalContext
+from agent_mode_cli.providers.base import ProviderRateLimitError
 
 
 def _to_openai_responses_input(messages: Sequence[ChatMessage]) -> List[Dict[str, Any]]:
@@ -59,7 +60,27 @@ class OpenAIProviderAdapter:
     def call_model(self, *, model: str, tools: Sequence[Dict[str, Any]], context: UniversalContext, debug: bool) -> Any:
         if debug:
             print(f"[debug] calling model with context of {len(context)} messages")
-        return self.client.responses.create(model=model, tools=list(tools), input=_to_openai_responses_input(context.messages))
+        try:
+            return self.client.responses.create(model=model, tools=list(tools), input=_to_openai_responses_input(context.messages))
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            if status is None:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+            retry_after = None
+            if status == 429:
+                headers = getattr(exc, "headers", None)
+                if headers is None:
+                    resp = getattr(exc, "response", None)
+                    headers = getattr(resp, "headers", None) if resp is not None else None
+                if headers:
+                    retry_after_header = headers.get("retry-after")
+                    if retry_after_header is not None:
+                        try:
+                            retry_after = float(retry_after_header)
+                        except (TypeError, ValueError):
+                            retry_after = None
+                raise ProviderRateLimitError('OpenAI rate limit hit', provider='openai', retry_after=retry_after) from exc
+            raise
 
     def _stringify_reasoning(self, item: Any) -> str:
         pieces: list[str] = []

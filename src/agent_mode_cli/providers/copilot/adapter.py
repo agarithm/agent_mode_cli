@@ -8,6 +8,7 @@ import httpx
 
 from agent_mode_cli.core.agent_loop import ParseResult, ToolCallInfo, safe_json_loads
 from agent_mode_cli.core.universal_context import ChatMessage, ToolCall, UniversalContext
+from agent_mode_cli.providers.base import ProviderRateLimitError
 from agent_mode_cli.providers.copilot.runtime import maybe_resolve_model_alias, resolve_gemini_model
 
 
@@ -76,7 +77,7 @@ class CopilotProviderAdapter:
         try:
             return _request(initial_model)
         except httpx.HTTPStatusError as exc:
-            # If the configured/default model isn't available, attempt a single automatic recovery.
+            retry_after: Optional[float] = None
             try:
                 body = exc.response.json()
             except Exception:
@@ -87,6 +88,12 @@ class CopilotProviderAdapter:
                 err = body.get("error")
                 if isinstance(err, dict):
                     error_code = (err.get("code") or "").strip().lower() or None
+                    retry_after_value = err.get("retry_after") if err else None
+                    if retry_after_value is not None:
+                        try:
+                            retry_after = float(retry_after_value)
+                        except (TypeError, ValueError):
+                            retry_after = None
 
             if exc.response.status_code == 404 and error_code == "unknown_model":
                 recovered_model = resolve_gemini_model(self.client)
@@ -96,6 +103,13 @@ class CopilotProviderAdapter:
                     return _request(recovered_model)
                 except Exception:
                     pass
+
+            if exc.response.status_code == 429:
+                raise ProviderRateLimitError(
+                    "GitHub Models rate limit hit",
+                    provider="copilot",
+                    retry_after=retry_after,
+                ) from exc
 
             text = (exc.response.text or "").strip()
             raise RuntimeError(f"GitHub Models inference failed: HTTP {exc.response.status_code} {text}") from exc

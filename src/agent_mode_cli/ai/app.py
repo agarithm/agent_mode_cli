@@ -77,10 +77,14 @@ def main(argv: list[str] | None = None) -> int:
         "copilot": ProviderEntry(
             name="copilot",
             description="GitHub Copilot / GitHub Models (requires GITHUB_TOKEN)",
-            default_model=os.getenv("AI_COPILOT_MODEL", "google/gemini-latest"),
+            default_model=os.getenv("AI_COPILOT_MODEL", "xai/grok-3"),
             build_tools=build_copilot_tools,
             create_adapter=_create_copilot_adapter,
             prepare_runtime=None,
+            fallback_providers=(
+                os.getenv("AI_COPILOT_FALLBACK_PRIMARY", "openai"),
+                os.getenv("AI_COPILOT_FALLBACK_SECONDARY", "ollama"),
+            ),
         ),
         "openai": ProviderEntry(
             name="openai",
@@ -89,6 +93,10 @@ def main(argv: list[str] | None = None) -> int:
             build_tools=build_openai_tools,
             create_adapter=_create_openai_adapter,
             prepare_runtime=None,
+            fallback_providers=(
+                os.getenv("AI_OPENAI_FALLBACK_PRIMARY", "copilot"),
+                os.getenv("AI_OPENAI_FALLBACK_SECONDARY", "ollama"),
+            ),
         ),
     }
 

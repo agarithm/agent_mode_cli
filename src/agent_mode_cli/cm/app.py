@@ -29,10 +29,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Compatibility wrapper around `ai` (defaults provider to Copilot / GitHub Models).",
         env_lines=(
             "GITHUB_TOKEN    required (PAT or token with models access)",
-            "CM_MODEL        optional (default: google/gemini-latest)",
+            "CM_MODEL        optional (default: xai/grok-3)",
             "CM_DEBUG        optional (1/true enables debug)",
             "CM_PROMPT_FILE  optional (default: ~/.cm_prompt)",
             "AI_PROVIDER     optional (overrides wrapper default)",
+            "CM_FALLBACKS   optional comma-separated provider list",
         ),
         version=__version__,
     )
@@ -40,7 +41,15 @@ def main(argv: list[str] | None = None) -> int:
         return flag_exit
 
     _set_env("AI_PROVIDER", "copilot")
-    _set_env("AI_MODEL", os.getenv("CM_MODEL", "google/gemini-latest"))
+    _set_env("AI_MODEL", os.getenv("CM_MODEL", "xai/grok-3"))
+
+    fallbacks = (os.getenv("CM_FALLBACKS") or "").strip()
+    if fallbacks:
+        parts = [p.strip().lower() for p in fallbacks.split(",") if p.strip()]
+        if len(parts) >= 1:
+            _set_env("AI_COPILOT_FALLBACK_PRIMARY", parts[0])
+        if len(parts) >= 2:
+            _set_env("AI_COPILOT_FALLBACK_SECONDARY", parts[1])
 
     if os.getenv("CM_DEBUG"):
         _set_env("AI_DEBUG", os.getenv("CM_DEBUG", ""))
