@@ -18,12 +18,13 @@ def _find_repo_root(start: Path) -> Path | None:
 
 
 def _usage() -> None:
-    print("usage: ./run_test <ai|am|om> [args...]", file=sys.stderr)
+    print("usage: ./run_test <ai|am|om|cm> [args...]", file=sys.stderr)
     print("", file=sys.stderr)
     print("tools:", file=sys.stderr)
     print("  ai  unified agent REPL (multi-provider; default Ollama)", file=sys.stderr)
     print("  am  compatibility alias (defaults provider to OpenAI)", file=sys.stderr)
     print("  om  compatibility alias (defaults provider to Ollama)", file=sys.stderr)
+    print("  cm  compatibility alias (defaults provider to Copilot / GitHub Models)", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     tool = argv.pop(0)
-    if tool not in {"ai", "am", "om"}:
+    if tool not in {"ai", "am", "om", "cm"}:
         _usage()
         return 2
 
@@ -54,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         from agent_mode_cli.ai.app import main as tool_main
     elif tool == "am":
         from agent_mode_cli.am.app import main as tool_main
+    elif tool == "cm":
+        from agent_mode_cli.cm.app import main as tool_main
     else:
         from agent_mode_cli.om.app import main as tool_main
 

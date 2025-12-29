@@ -11,6 +11,9 @@ from agent_mode_cli.core.system_prompt import build_internal_system_prompt
 from agent_mode_cli.providers.ollama.adapter import OllamaProviderAdapter
 from agent_mode_cli.providers.ollama.runtime import prepare_runtime
 from agent_mode_cli.providers.ollama.tools import build_tools as build_ollama_tools
+from agent_mode_cli.providers.copilot.adapter import CopilotProviderAdapter
+from agent_mode_cli.providers.copilot.runtime import create_github_models_client
+from agent_mode_cli.providers.copilot.tools import build_tools as build_copilot_tools
 from agent_mode_cli.providers.openai.adapter import OpenAIProviderAdapter
 from agent_mode_cli.providers.openai.runtime import create_openai_client
 from agent_mode_cli.providers.openai.tools import build_tools as build_openai_tools
@@ -40,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
             "AI_DEBUG        optional (1/true enables debug)",
             "AI_PROMPT_FILE  optional (default: ~/.ai_prompt)",
             "OPENAI_API_KEY  required for OpenAI provider",
+            "GITHUB_TOKEN    required for Copilot provider (GitHub Models)",
             "OLLAMA_HOST     optional (use remote Ollama)",
         ),
         version=__version__,
@@ -57,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
         client = create_openai_client()
         return OpenAIProviderAdapter(client=client)
 
+    def _create_copilot_adapter() -> CopilotProviderAdapter:
+        client = create_github_models_client()
+        return CopilotProviderAdapter(client=client)
+
     providers = {
         "ollama": ProviderEntry(
             name="ollama",
@@ -65,6 +73,14 @@ def main(argv: list[str] | None = None) -> int:
             build_tools=build_ollama_tools,
             create_adapter=_create_ollama_adapter,
             prepare_runtime=lambda debug: prepare_runtime(debug=debug, log_prefix="[ai]"),
+        ),
+        "copilot": ProviderEntry(
+            name="copilot",
+            description="GitHub Copilot / GitHub Models (requires GITHUB_TOKEN)",
+            default_model=os.getenv("AI_COPILOT_MODEL", "google/gemini-latest"),
+            build_tools=build_copilot_tools,
+            create_adapter=_create_copilot_adapter,
+            prepare_runtime=None,
         ),
         "openai": ProviderEntry(
             name="openai",

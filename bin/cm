@@ -88,7 +88,7 @@ if not any(isinstance(f, _EmbeddedFinder) for f in sys.meta_path):
 
 
 def _run_entry() -> int:
-    from agent_mode_cli.entrypoints.am import main as _main
+    from agent_mode_cli.entrypoints.cm import main as _main
     result = _main()
     if result is None:
         return 0

@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     built.append(build_one("ai", "agent_mode_cli.entrypoints.ai", out_dir))
     built.append(build_one("am", "agent_mode_cli.entrypoints.am", out_dir))
     built.append(build_one("om", "agent_mode_cli.entrypoints.om", out_dir))
+    built.append(build_one("cm", "agent_mode_cli.entrypoints.cm", out_dir))
 
     print("Built:")
     for path in built:
