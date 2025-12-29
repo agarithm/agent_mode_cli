@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+try:
+    from rich.console import Console
+    from rich.markdown import Markdown
+except Exception:
+    Console = None  # type: ignore
+    Markdown = None  # type: ignore
+
 
 def run_repl(
     *,
@@ -10,6 +17,23 @@ def run_repl(
     process_line: Callable[[str], str],
     after_each_prompt: Callable[[], None],
 ) -> int:
+    console = Console() if Console is not None else None
+
+    def _render_result(result: str) -> None:
+        text = (result or "").rstrip()
+        if console is None or Markdown is None:
+            print(f">>> {text}\n")
+            return
+
+        console.print("[bold cyan]>>>[/bold cyan]", end=" ")
+        try:
+            markdown = Markdown(text or "")
+            console.print(markdown)
+        except Exception:
+            console.print(text)
+        finally:
+            console.print()
+
     try:
         before_first_prompt()
 
@@ -18,7 +42,7 @@ def run_repl(
                 result = process_line(initial_line.strip())
             finally:
                 after_each_prompt()
-            print(f">>> {result}\n")
+            _render_result(result)
 
         while True:
             line = input("> ")
@@ -31,7 +55,7 @@ def run_repl(
                 result = process_line(line)
             finally:
                 after_each_prompt()
-            print(f">>> {result}\n")
+            _render_result(result)
         return 0
     except EOFError:
         print("\nInterrupted – exiting.")
