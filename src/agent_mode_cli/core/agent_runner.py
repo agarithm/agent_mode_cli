@@ -12,7 +12,7 @@ from agent_mode_cli.core.prompt_file import load_user_prompt
 from agent_mode_cli.core.repl import run_repl
 from agent_mode_cli.core.universal_context import ChatMessage, UniversalContext
 from agent_mode_cli.core.web_fetch import web_fetch
-from agent_mode_cli.core.provider_adapter import ProviderAdapter
+from agent_mode_cli.providers.base import ProviderAdapter
 from agent_mode_cli.core.runtime_settings import RuntimeSettings
 
 

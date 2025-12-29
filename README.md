@@ -16,6 +16,15 @@ The canonical build artifacts are **single-file Python scripts** in `dist/`, gen
 
 Internally, `am` and `om` share a universal context representation and provider-specific adapters so additional AI backends can be added without changing the core agent loop.
 
+## Providers
+
+Provider-specific code lives under `src/agent_mode_cli/providers/`:
+
+- `providers/openai/` – OpenAI adapter + runtime helpers + tool schema
+- `providers/ollama/` – Ollama adapter + runtime helpers + tool schema
+
+To add a new provider, follow the short guide in `src/agent_mode_cli/providers/README.md`.
+
 ## Requirements
 
 - Python **3.10+**

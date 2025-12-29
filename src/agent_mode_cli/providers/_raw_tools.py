@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Sequence
 
 
-def _raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
+def raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
+    """Return the provider-agnostic raw tool specs.
+
+    Providers can map these into their own tool schema shape.
+    """
+
     prefix = (prefix or "").strip().upper()
     return [
         {
@@ -92,37 +97,5 @@ def _raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
     ]
 
 
-def build_openai_tools(prefix: str) -> List[Dict[str, Any]]:
-    """Tools schema for OpenAI Responses API (am)."""
-    tools: List[Dict[str, Any]] = []
-    for spec in _raw_tool_specs(prefix):
-        tools.append(
-            {
-                "type": "function",
-                "name": spec["name"],
-                "description": spec.get("description", ""),
-                "parameters": spec.get("parameters", {}),
-            }
-        )
-    return tools
-
-
-def build_ollama_tools(prefix: str) -> List[Dict[str, Any]]:
-    """Tools schema for Ollama chat API (om)."""
-    tools: List[Dict[str, Any]] = []
-    for spec in _raw_tool_specs(prefix):
-        tools.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": spec["name"],
-                    "description": spec.get("description", ""),
-                    "parameters": spec.get("parameters", {}),
-                },
-            }
-        )
-    return tools
-
-
 def iter_tool_names() -> List[str]:
-    return [spec["name"] for spec in _raw_tool_specs("X")]
+    return [spec["name"] for spec in raw_tool_specs("X")]

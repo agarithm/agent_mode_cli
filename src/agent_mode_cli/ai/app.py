@@ -7,12 +7,13 @@ import ollama
 
 from agent_mode_cli.core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl
 from agent_mode_cli.core.cli_help import handle_common_flags
-from agent_mode_cli.core.ollama_adapter import OllamaProviderAdapter
-from agent_mode_cli.core.ollama_runtime import prepare_runtime
-from agent_mode_cli.core.openai_adapter import OpenAIProviderAdapter
-from agent_mode_cli.core.openai_runtime import create_openai_client
 from agent_mode_cli.core.system_prompt import build_internal_system_prompt
-from agent_mode_cli.core.tool_specs import build_ollama_tools, build_openai_tools
+from agent_mode_cli.providers.ollama.adapter import OllamaProviderAdapter
+from agent_mode_cli.providers.ollama.runtime import prepare_runtime
+from agent_mode_cli.providers.ollama.tools import build_tools as build_ollama_tools
+from agent_mode_cli.providers.openai.adapter import OpenAIProviderAdapter
+from agent_mode_cli.providers.openai.runtime import create_openai_client
+from agent_mode_cli.providers.openai.tools import build_tools as build_openai_tools
 
 
 INTERNAL_SYSTEM_PROMPT = build_internal_system_prompt("AI")
