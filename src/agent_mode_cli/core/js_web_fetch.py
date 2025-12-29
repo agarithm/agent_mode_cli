@@ -53,6 +53,7 @@ def js_web_fetch(
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
+            context = None
             try:
                 context = browser.new_context(user_agent=ua)
                 page = context.new_page()
@@ -97,6 +98,11 @@ def js_web_fetch(
 
                 return header + "\n---\n" + (body or "(no content)")
             finally:
+                if context is not None:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
                 try:
                     browser.close()
                 except Exception:
