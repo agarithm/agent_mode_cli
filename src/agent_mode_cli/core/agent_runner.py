@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from agent_mode_cli.core.agent_loop import ToolCallInfo, process_line_with_tools
-from agent_mode_cli.core.bash_tool import bash_command
+from agent_mode_cli.tools import bash_command
 from agent_mode_cli.core.confirm import ConfirmState, prompt_for_confirmation, requires_confirmation
-from agent_mode_cli.core.js_web_fetch import js_web_fetch
+from agent_mode_cli.tools import js_web_fetch
 from agent_mode_cli.core.prompt_file import load_user_prompt
 from agent_mode_cli.core.repl import run_repl
 from agent_mode_cli.core.universal_context import ChatMessage, UniversalContext
-from agent_mode_cli.core.web_fetch import web_fetch
+from agent_mode_cli.tools import web_fetch
 from agent_mode_cli.providers.base import ProviderAdapter, ProviderRateLimitError
 from agent_mode_cli.core.runtime_settings import RuntimeSettings
 
