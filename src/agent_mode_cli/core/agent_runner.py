@@ -242,18 +242,21 @@ def run_agent_repl(
             [
                 "Commands:",
                 "- help | :help                 Show this help.",
-                "- :providers                    List available providers.",
-                "- :use <name>                   Switch provider for this session.",
-                "- :settings                     Show current settings.",
-                "- :debug <on|off>               Toggle debug logging.",
-                "- :model <name>                 Set model for the current provider.",
-                "- :max_tool_iterations <n>       Max tool-loop iterations per prompt.",
-                "- :max_tool_seconds <sec|off>    Max wall-clock seconds in tool loop.",
+                "- :provider [name]              Show or switch provider.",
+                "- :model [id]                   Show or switch model for current provider.",
+                "- :settings [subcommand...]      Show or change runtime settings.",
                 "- quit | q | exit                Exit the REPL.",
                 "",
                 "Notes:",
                 "- Model is tracked per provider; switching providers keeps history.",
                 "- Settings are per-process; they reset when you restart.",
+                "",
+                "Settings subcommands:",
+                "- :settings debug <on|off>",
+                "- :settings provider <name>",
+                "- :settings model <id>",
+                "- :settings max_tool_iterations <n>",
+                "- :settings max_tool_seconds <sec|off>",
             ]
         )
 
@@ -265,51 +268,112 @@ def run_agent_repl(
         lowered = raw.lower().strip()
 
         if lowered in {"help", ":help", "?", ":?", "commands", ":commands"}:
-            return _help_text()
+            return f"{_help_text()}\n\n{_format_settings()}"
 
+        def _format_provider_status() -> str:
+            lines: list[str] = [f"Current provider: {active_provider}", "", _format_providers()]
+            return "\n".join(lines)
+
+        def _format_model_status(*, provider_name: str) -> str:
+            current_model = _active_model_for(provider_name)
+            try:
+                adapter = _get_or_create_adapter(provider_name)
+                models = list(adapter.list_models(debug=settings.debug))
+            except Exception as exc:
+                return f"Current model: {current_model}\n\nerror: failed to list models for '{provider_name}': {exc}"
+
+            models = [m for m in models if (m or "").strip()]
+            if not models:
+                return f"Current model: {current_model}\n\nAvailable models: (none found)"
+
+            max_lines = int(os.getenv("AI_MODELS_LIST_MAX", "200") or "200")
+            lines: list[str] = [f"Current model: {current_model}", f"Available models for {provider_name} ({len(models)}):"]
+            for mid in models[:max_lines]:
+                prefix = "*" if mid == current_model else "-"
+                lines.append(f"{prefix} {mid}")
+            if len(models) > max_lines:
+                lines.append(f"... ({len(models) - max_lines} more; set AI_MODELS_LIST_MAX to increase)")
+            return "\n".join(lines)
+
+        # Back-compat aliases (not advertised).
         if lowered in {":providers", ":list providers"}:
-            return _format_providers()
+            lowered = ":provider"
+            raw = ":provider"
+        if lowered.startswith(":use "):
+            lowered = ":provider " + lowered[len(":use ") :]
+            raw = ":provider " + raw[len(":use ") :]
 
-        for prefix in (":use ", ":provider "):
-            if lowered.startswith(prefix):
-                target = raw[len(prefix) :].strip()
-                if not target:
+        if lowered == ":provider" or lowered.startswith(":provider "):
+            target = raw[len(":provider") :].strip()
+            if not target:
+                return _format_provider_status()
+            provider_name = target.strip().lower()
+            try:
+                _apply_active_provider(provider_name)
+            except Exception as exc:
+                return f"error: {exc}"
+            preferred_provider = active_provider
+            _announce_active_provider_and_model("user requested")
+            return _format_provider_status()
+
+        if lowered == ":model" or lowered.startswith(":model "):
+            target = raw[len(":model") :].strip()
+            if not target:
+                return _format_model_status(provider_name=active_provider)
+            new_model = target
+            models_by_provider[active_provider] = new_model
+            os.environ[config.model_env] = new_model
+            _announce_active_provider_and_model("user requested")
+            return _format_model_status(provider_name=active_provider)
+
+        if lowered == ":settings" or lowered in {":limits"}:
+            return _format_settings()
+
+        if lowered.startswith(":settings "):
+            rest = raw[len(":settings ") :].strip()
+            if not rest:
+                return _format_settings()
+            parts = rest.split()
+            action = (parts[0] or "").strip().lower()
+            value = " ".join(parts[1:]).strip()
+
+            if action == "debug":
+                result = settings.set_debug_from_text(value)
+                os.environ[config.debug_env] = "1" if settings.debug else "0"
+                state.debug = settings.debug
+                return f"{result}\n\n{_format_settings()}"
+
+            if action == "provider":
+                if not value:
                     return "error: provider name is required"
                 try:
-                    _apply_active_provider(target)
+                    _apply_active_provider(value.strip().lower())
                 except Exception as exc:
                     return f"error: {exc}"
                 preferred_provider = active_provider
                 _announce_active_provider_and_model("user requested")
-                return f"Using provider: {active_provider}"
+                return _format_settings()
 
-        if lowered in {":settings", ":limits"}:
-            return _format_settings()
-
-        for prefix in (":debug ",):
-            if lowered.startswith(prefix):
-                result = settings.set_debug_from_text(raw[len(prefix) :])
-                os.environ[config.debug_env] = "1" if settings.debug else "0"
-                state.debug = settings.debug
-                return result
-
-        for prefix in (":model ",):
-            if lowered.startswith(prefix):
-                new_model = raw[len(prefix) :].strip()
-                if not new_model:
-                    return "error: model name is required"
-                models_by_provider[active_provider] = new_model
-                os.environ[config.model_env] = new_model
+            if action == "model":
+                if not value:
+                    return "error: model id is required"
+                models_by_provider[active_provider] = value
+                os.environ[config.model_env] = value
                 _announce_active_provider_and_model("user requested")
-                return f"{config.model_env} set to {new_model}."
+                return _format_settings()
 
-        for prefix in (":max_tool_iterations ",):
-            if lowered.startswith(prefix):
-                return settings.set_max_tool_iterations_from_text(raw[len(prefix) :])
+            if action == "max_tool_iterations":
+                result = settings.set_max_tool_iterations_from_text(value)
+                return f"{result}\n\n{_format_settings()}"
 
-        for prefix in (":max_tool_seconds ",):
-            if lowered.startswith(prefix):
-                return settings.set_max_tool_seconds_from_text(raw[len(prefix) :])
+            if action == "max_tool_seconds":
+                result = settings.set_max_tool_seconds_from_text(value)
+                return f"{result}\n\n{_format_settings()}"
+
+            return (
+                "error: unknown settings subcommand. Use one of: "
+                "debug, provider, model, max_tool_iterations, max_tool_seconds"
+            )
         return None
 
     def process(line: str) -> str:

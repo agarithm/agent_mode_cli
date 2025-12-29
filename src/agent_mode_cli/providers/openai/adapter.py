@@ -57,6 +57,20 @@ def _to_openai_responses_input(messages: Sequence[ChatMessage]) -> List[Dict[str
 class OpenAIProviderAdapter:
     client: Any
 
+    def list_models(self, *, debug: bool) -> Sequence[str]:
+        if debug:
+            print("[debug] listing OpenAI models")
+        result = self.client.models.list()
+        data = getattr(result, "data", None)
+        if not data:
+            return []
+        models: list[str] = []
+        for item in data:
+            mid = getattr(item, "id", None)
+            if isinstance(mid, str) and mid.strip():
+                models.append(mid.strip())
+        return sorted(set(models))
+
     def call_model(self, *, model: str, tools: Sequence[Dict[str, Any]], context: UniversalContext, debug: bool) -> Any:
         if debug:
             print(f"[debug] calling model with context of {len(context)} messages")

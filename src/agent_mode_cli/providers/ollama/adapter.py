@@ -31,6 +31,36 @@ def _to_ollama_chat_messages(messages: Sequence[ChatMessage]) -> List[Dict[str, 
 class OllamaProviderAdapter:
     client: Any
 
+    def list_models(self, *, debug: bool) -> Sequence[str]:
+        if debug:
+            print("[debug] listing Ollama models")
+        result = self.client.list()
+        models: list[str] = []
+        if hasattr(result, "models"):
+            for item in getattr(result, "models") or []:
+                name = getattr(item, "model", None) or getattr(item, "name", None)
+                if isinstance(name, str) and name.strip():
+                    models.append(name.strip())
+            return sorted(set(models))
+
+        if isinstance(result, dict):
+            items = result.get("models")
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        name = (item.get("name") or "").strip()
+                        if name:
+                            models.append(name)
+        elif isinstance(result, list):
+            for item in result:
+                if isinstance(item, dict):
+                    name = (item.get("name") or "").strip()
+                    if name:
+                        models.append(name)
+                elif isinstance(item, str) and item.strip():
+                    models.append(item.strip())
+        return sorted(set(models))
+
     def _normalize_arguments(self, arguments: Any) -> Dict[str, Any]:
         if arguments is None:
             return {}

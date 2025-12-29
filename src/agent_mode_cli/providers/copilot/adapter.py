@@ -55,6 +55,23 @@ class CopilotProviderAdapter:
 
     client: httpx.Client
 
+    def list_models(self, *, debug: bool) -> Sequence[str]:
+        if debug:
+            print("[debug] listing GitHub Models catalog")
+        resp = self.client.get("/catalog/models")
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list):
+            return []
+        models: list[str] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            mid = (item.get("id") or "").strip()
+            if mid:
+                models.append(mid)
+        return sorted(set(models))
+
     def call_model(self, *, model: str, tools: Sequence[Dict[str, Any]], context: UniversalContext, debug: bool) -> Any:
         initial_model = maybe_resolve_model_alias(model, self.client)
         if debug and initial_model != model:

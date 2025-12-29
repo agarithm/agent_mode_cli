@@ -18,6 +18,9 @@ class ProviderRateLimitError(RuntimeError):
 class ProviderAdapter(Protocol):
     """Contract for provider-specific model adapters used by the agent runner."""
 
+    def list_models(self, *, debug: bool) -> Sequence[str]:
+        ...
+
     def call_model(self, *, model: str, tools: Sequence[Dict[str, Any]], context: UniversalContext, debug: bool) -> Any:
         ...
 
