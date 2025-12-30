@@ -93,7 +93,7 @@ Note: `bin/` is a deployment target (generated files). Don’t hand-edit deploye
 **Defaults / behavior:**
 
 - Default provider: `ollama` (override with `AI_PROVIDER`)
-- Default model: `gpt-oss` (override with `AI_MODEL` per provider)
+- Default model: `qwen2.5-coder:32b`  (override with `AI_MODEL` per provider)
 
 **Local / settings commands (not sent to the model):**
 
