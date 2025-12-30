@@ -46,6 +46,7 @@ class ProviderEntry:
     build_tools: Callable[[str], Sequence[Dict[str, Any]]]
     create_adapter: Callable[[], ProviderAdapter]
     prepare_runtime: Optional[Callable[[bool], None]] = None
+    validate_model: Optional[Callable[[str, bool], str]] = None
     fallback_providers: Sequence[str] = ()
 
 
@@ -114,6 +115,14 @@ def run_agent_repl(
         if name not in providers:
             available = ", ".join(sorted(providers.keys()))
             raise RuntimeError(f"unknown provider '{name}'. Available: {available}")
+
+        # Validate model if provider has validation callback
+        entry = providers[name]
+        if entry.validate_model is not None:
+            current_model = models_by_provider.get(name) or entry.default_model
+            validated_model = entry.validate_model(current_model, settings.debug)
+            models_by_provider[name] = validated_model
+
         active_provider = name
         active_adapter = _get_or_create_adapter(name)
         active_tools = list(providers[name].build_tools(config.env_prefix))

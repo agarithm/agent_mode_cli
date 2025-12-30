@@ -11,6 +11,7 @@ from core.system_prompt import build_internal_system_prompt
 from providers.ollama.adapter import OllamaProviderAdapter
 from providers.ollama.runtime import prepare_runtime
 from providers.ollama.tools import build_tools as build_ollama_tools
+from providers.ollama.validation import ensure_ollama_model
 from providers.copilot.adapter import CopilotProviderAdapter
 from providers.copilot.runtime import create_github_models_client
 from providers.copilot.tools import build_tools as build_copilot_tools
@@ -28,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
 
     debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
     default_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
-    default_ollama_model = os.getenv("AI_MODEL", "gpt-oss")
+    default_ollama_model = os.getenv("AI_MODEL", "qwen2.5-coder:32b")
 
     flag_exit = handle_common_flags(
         argv,
@@ -39,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         env_lines=(
             "AI_PROVIDER     optional (default: ollama)",
-            "AI_MODEL        optional (default: gpt-oss; applies to current provider)",
+            "AI_MODEL        optional (default: qwen2.5-coder:32b; applies to current provider)",
             "AI_DEBUG        optional (1/true enables debug)",
             "AI_PROMPT_FILE  optional (default: ~/.ai_prompt)",
             "OPENAI_API_KEY  required for OpenAI provider",
@@ -50,6 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     if flag_exit is not None:
         return flag_exit
+
+    if default_provider == "ollama":
+        try:
+            default_ollama_model = ensure_ollama_model(default_ollama_model, debug=debug, log_prefix="[ai]")
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     initial_line = " ".join(argv) if argv else None
 
@@ -73,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             build_tools=build_ollama_tools,
             create_adapter=_create_ollama_adapter,
             prepare_runtime=lambda debug: prepare_runtime(debug=debug, log_prefix="[ai]"),
+            validate_model=lambda model, debug: ensure_ollama_model(model, debug=debug, log_prefix="[ai]"),
         ),
         "copilot": ProviderEntry(
             name="copilot",
