@@ -99,95 +99,6 @@ def _make_backup(path: Path) -> tuple[Optional[Path], Optional[str]]:
         return None, f"error: failed to create backup - {exc}"
 
 
-def write_file(
-    path: str,
-    content: str,
-    *,
-    mode: str = "overwrite",
-    offset: int = 0,
-    dry_run: bool = False,
-    make_backup: bool = True,
-) -> str:
-    """Write content to a file within the current working directory.
-
-    Modes:
-    - overwrite: replace the entire file
-    - append: append to the end
-    - insert: insert at byte offset (default offset=0)
-
-    Returns a unified diff of the change (truncated if needed).
-    """
-
-    if offset < 0:
-        return "error: offset must be >= 0"
-
-    mode = (mode or "").strip().lower() or "overwrite"
-    if mode not in {"overwrite", "append", "insert"}:
-        return "error: mode must be one of: overwrite, append, insert"
-
-    root = _workspace_root()
-    resolved, err = _resolve_workspace_path(path, root=root)
-    if err:
-        return err
-    assert resolved is not None
-
-    if resolved.exists() and resolved.is_dir():
-        return f"error: path is a directory: {path}"
-
-    old_text, err = _read_text_file(resolved)
-    if err:
-        return err
-
-    # Ensure parent exists (for real writes only).
-    if not dry_run:
-        try:
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            return f"error: failed to create parent directories - {exc}"
-
-    new_text: str
-    if mode == "overwrite":
-        new_text = content
-    elif mode == "append":
-        new_text = old_text + content
-    else:
-        # insert
-        raw_bytes = old_text.encode("utf-8", errors="replace")
-        if offset > len(raw_bytes):
-            return f"error: offset out of range (offset={offset}, file_bytes={len(raw_bytes)})"
-        insert_bytes = (content or "").encode("utf-8", errors="replace")
-        new_bytes = raw_bytes[:offset] + insert_bytes + raw_bytes[offset:]
-        new_text = new_bytes.decode("utf-8", errors="replace")
-
-    diff = _unified_diff(old_text, new_text, from_name=f"a/{path}", to_name=f"b/{path}")
-    diff, was_truncated = _truncate(diff)
-
-    if dry_run:
-        suffix = "\nnote: diff truncated" if was_truncated else ""
-        return "dry_run: true\n---\n" + diff + suffix
-
-    if make_backup:
-        backup_path, backup_err = _make_backup(resolved)
-        if backup_err:
-            return backup_err
-    else:
-        backup_path = None
-
-    try:
-        resolved.write_text(new_text, encoding="utf-8")
-    except PermissionError:
-        return "error: permission denied"
-    except OSError as exc:
-        return f"error: {exc}"
-
-    header = ["ok: wrote file", f"path: {path}", f"mode: {mode}"]
-    if make_backup and backup_path is not None:
-        header.append(f"backup: {backup_path.name}")
-    if was_truncated:
-        header.append("note: diff truncated")
-    return "\n".join(header) + "\n---\n" + diff
-
-
 @dataclass(frozen=True)
 class EditOp:
     op: str
@@ -312,18 +223,25 @@ def _apply_op(text: str, op: EditOp) -> tuple[str, Optional[str]]:
 
 def edit_file(
     path: str,
-    edits: Any,
+    edits: Any = None,
     *,
+    mode: Optional[str] = None,
+    content: Optional[str] = None,
     dry_run: bool = False,
     make_backup: bool = True,
 ) -> str:
-    """Apply structured edits to a file within the current working directory.
+    """Edit a file within the current working directory.
 
-    The `edits` argument is a list of operations. Supported ops:
-    - replace: {op:'replace', old:str, new:str, count:int? (0 = all)}
-    - delete: {op:'delete', old:str, count:int? (0 = all)}
-    - insert_before: {op:'insert_before', before:str, content:str, count:int? (0 = all)}
-    - insert_after: {op:'insert_after', after:str, content:str, count:int? (0 = all)}
+    Two modes are supported:
+    1) Whole-file writes:
+       - mode='overwrite' with content=str
+       - mode='append' with content=str
+
+    2) Structured edits via `edits` list. Supported ops:
+       - replace: {op:'replace', old:str, new:str, count:int? (0 = all)}
+       - delete: {op:'delete', old:str, count:int? (0 = all)}
+       - insert_before: {op:'insert_before', before:str, content:str, count:int? (0 = all)}
+       - insert_after: {op:'insert_after', after:str, content:str, count:int? (0 = all)}
     """
 
     root = _workspace_root()
@@ -344,11 +262,26 @@ def edit_file(
     if err:
         return err
 
-    new_text = old_text
-    for idx, op in enumerate(ops):
-        new_text, op_err = _apply_op(new_text, op)
-        if op_err:
-            return f"error: edit[{idx}] {op_err}"
+    normalized_mode = (mode or "").strip().lower()
+    if normalized_mode:
+        if normalized_mode not in {"overwrite", "append"}:
+            return "error: mode must be one of: overwrite, append"
+        if not isinstance(content, str):
+            return "error: content is required when mode is set"
+        new_text = content if normalized_mode == "overwrite" else old_text + content
+        edit_summary = f"mode: {normalized_mode}"
+    else:
+        ops, err = _parse_ops(edits)
+        if err:
+            return err
+        assert ops is not None
+
+        new_text = old_text
+        for idx, op in enumerate(ops):
+            new_text, op_err = _apply_op(new_text, op)
+            if op_err:
+                return f"error: edit[{idx}] {op_err}"
+        edit_summary = f"edits: {len(ops)}"
 
     diff = _unified_diff(old_text, new_text, from_name=f"a/{path}", to_name=f"b/{path}")
     diff, was_truncated = _truncate(diff)
@@ -372,7 +305,7 @@ def edit_file(
     except OSError as exc:
         return f"error: {exc}"
 
-    header = ["ok: edited file", f"path: {path}", f"edits: {len(ops)}"]
+    header = ["ok: edited file", f"path: {path}", edit_summary]
     if make_backup and backup_path is not None:
         header.append(f"backup: {backup_path.name}")
     if was_truncated:

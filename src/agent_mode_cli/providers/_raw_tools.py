@@ -33,6 +33,10 @@ def raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
                         "type": "integer",
                         "description": "Maximum number of entries to return (default: 2000).",
                     },
+                    "include_metadata": {
+                        "type": "boolean",
+                        "description": "If true, include perms/size/mtime columns (tab-separated) for each entry (default: false).",
+                    },
                 },
             },
         },
@@ -59,111 +63,92 @@ def raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
             },
         },
         {
-            "name": "file_metadata",
-            "description": "Return basic metadata about a file or directory within the current working directory (read-only).",
+            "name": "python_exec",
+            "description": "Execute a short Python snippet in a subprocess and return a JSON result (captures stdout/stderr). This tool can execute arbitrary code and should be used carefully.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "code": {
                         "type": "string",
-                        "description": "Path to file or directory (workspace-confined).",
-                    }
-                },
-                "required": ["path"],
-            },
-        },
-        {
-            "name": "git_status",
-            "description": "Read-only git status for the workspace repository.",
-            "parameters": {
-                "type": "object",
-                "properties": {
+                        "description": "Python code to execute. To return a value, assign it to a variable named 'result'.",
+                    },
+                    "input": {
+                        "type": "object",
+                        "description": "Optional JSON object provided to the snippet as 'tool_input'.",
+                        "additionalProperties": True,
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default: 10).",
+                    },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Maximum characters to return (default: 40000).",
-                    }
+                        "description": "Maximum characters returned for stdout/stderr/traceback (default: 20000).",
+                    },
                 },
+                "required": ["code"],
             },
         },
         {
-            "name": "git_diff",
-            "description": "Read-only git diff for the workspace repository.",
+            "name": "search_files",
+            "description": "Search for text in files under the current working directory using ripgrep (rg). Read-only, no shell.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (regex by default unless is_regex=false).",
+                    },
                     "paths": {
-                        "description": "Optional path or list of paths to limit diff to (workspace-confined).",
-                        "oneOf": [
-                            {"type": "string"},
-                            {"type": "array", "items": {"type": "string"}},
-                        ],
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of relative paths to search under (default: ['.']).",
+                    },
+                    "is_regex": {
+                        "type": "boolean",
+                        "description": "If true, treat query as a regex; if false, search as a fixed string (default: true).",
+                    },
+                    "ignore_case": {
+                        "type": "boolean",
+                        "description": "If true, case-insensitive search (default: false).",
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional rg --glob filter (e.g., '*.py' or 'src/**').",
+                    },
+                    "context_lines": {
+                        "type": "integer",
+                        "description": "Number of context lines before/after each match (default: 0).",
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "Maximum matches per file (default: 200).",
                     },
                     "max_chars": {
                         "type": "integer",
                         "description": "Maximum characters to return (default: 40000).",
                     },
-                    "staged": {
-                        "type": "boolean",
-                        "description": "If true, returns staged diff (git diff --staged) (default: false).",
-                    },
-                    "include_untracked": {
-                        "type": "boolean",
-                        "description": "If true, includes a diff-style preview for untracked text files (default: true).",
-                    },
-                    "max_untracked_files": {
-                        "type": "integer",
-                        "description": "Maximum untracked files to include when include_untracked=true (default: 20).",
-                    },
-                    "max_untracked_file_bytes": {
-                        "type": "integer",
-                        "description": "Maximum bytes read per untracked file when include_untracked=true (default: 200000).",
-                    },
                 },
-            },
-        },
-        {
-            "name": "write_file",
-            "description": "Write content to a file within the current working directory. This tool modifies files and should be used carefully.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Target file path (workspace-confined).",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content to write.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "description": "Write mode: overwrite | append | insert (default: overwrite).",
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "description": "Byte offset for mode=insert (default: 0).",
-                    },
-                    "dry_run": {
-                        "type": "boolean",
-                        "description": "If true, do not write; return a unified diff only (default: false).",
-                    },
-                    "make_backup": {
-                        "type": "boolean",
-                        "description": "If true and file exists, create a .bak.* backup before writing (default: true).",
-                    },
-                },
-                "required": ["path", "content"],
+                "required": ["query"],
             },
         },
         {
             "name": "edit_file",
-            "description": "Apply structured edits (replace/insert/delete) to a file within the current working directory. This tool modifies files and should be used carefully.",
+            "description": "Edit a file within the current working directory. Supports structured edits and whole-file overwrite/append. This tool modifies files and should be used carefully.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "Target file path (workspace-confined).",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "Whole-file write mode: overwrite | append. When provided, 'content' is required and 'edits' is ignored.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content used when mode is set (overwrite replaces entire file; append adds to end).",
                     },
                     "edits": {
                         "type": "array",
@@ -197,7 +182,7 @@ def raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
                         "description": "If true and file exists, create a .bak.* backup before writing (default: true).",
                     },
                 },
-                "required": ["path", "edits"],
+                "required": ["path"],
             },
         },
         {
@@ -215,8 +200,8 @@ def raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
             },
         },
         {
-            "name": "web_fetch",
-            "description": "Fetch a URL over HTTP(S) (no JavaScript). Follows redirects and can extract readable text from HTML.",
+            "name": "http_fetch",
+            "description": "Fetch a URL over HTTP(S). mode='simple' uses HTTP only (no JS). mode='browser' uses Playwright/Chromium with JavaScript enabled.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -224,17 +209,21 @@ def raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
                         "type": "string",
                         "description": "The URL to fetch (http or https).",
                     },
+                    "mode": {
+                        "type": "string",
+                        "description": "Fetch mode: simple | browser (default: simple).",
+                    },
                     "timeout_seconds": {
                         "type": "integer",
-                        "description": "Request timeout in seconds (default: 20).",
+                        "description": "Timeout in seconds (default: 20 for simple, 30 for browser).",
                     },
                     "max_bytes": {
                         "type": "integer",
-                        "description": "Maximum response bytes to read (default: 1500000).",
+                        "description": "(simple mode) Maximum response bytes to read (default: 1500000).",
                     },
                     "extract_text": {
                         "type": "boolean",
-                        "description": "If true, converts HTML into readable text (default: true).",
+                        "description": "If true, returns readable text; otherwise returns HTML (default: true).",
                     },
                     "max_chars": {
                         "type": "integer",
@@ -242,42 +231,16 @@ def raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
                     },
                     "headers": {
                         "type": "object",
-                        "description": "Optional HTTP headers as a JSON object.",
+                        "description": "(simple mode) Optional HTTP headers as a JSON object.",
                         "additionalProperties": True,
-                    },
-                },
-                "required": ["url"],
-            },
-        },
-        {
-            "name": "js_web_fetch",
-            "description": "Fetch a URL using a real headless browser with JavaScript enabled (Playwright/Chromium). Use when web_fetch returns insufficient content.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "The URL to fetch (http or https).",
-                    },
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "description": "Navigation timeout in seconds (default: 30).",
                     },
                     "wait_until": {
                         "type": "string",
-                        "description": "When to consider navigation finished: load | domcontentloaded | networkidle | commit (default: networkidle).",
-                    },
-                    "extract_text": {
-                        "type": "boolean",
-                        "description": "If true, returns rendered body text; if false, returns rendered HTML (default: true).",
-                    },
-                    "max_chars": {
-                        "type": "integer",
-                        "description": "Maximum characters to return in the body (default: 20000).",
+                        "description": "(browser mode) When to consider navigation finished: load | domcontentloaded | networkidle | commit (default: networkidle).",
                     },
                     "user_agent": {
                         "type": "string",
-                        "description": "Optional user agent override.",
+                        "description": "(browser mode) Optional user agent override.",
                     },
                 },
                 "required": ["url"],

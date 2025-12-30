@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import stat
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -52,6 +54,7 @@ def list_dir(
     recursive: bool = False,
     max_depth: int = 2,
     max_entries: int = _DEFAULT_MAX_LIST_ENTRIES,
+    include_metadata: bool = False,
 ) -> str:
     """Safely list directories within the current working directory.
 
@@ -78,6 +81,30 @@ def list_dir(
     out: list[str] = []
     truncated = False
 
+    def _safe_stat(p: Path) -> Optional[os.stat_result]:
+        try:
+            # Avoid following symlinks so we don't accidentally traverse outside root.
+            return os.stat(p, follow_symlinks=False)
+        except Exception:
+            return None
+
+    def _format_entry(p: Path, *, rel: str, is_dir: bool) -> str:
+        name = rel + ("/" if is_dir else "")
+        if not include_metadata:
+            return name
+
+        st = _safe_stat(p)
+        if st is None:
+            return "?\t?\t?\t" + name
+
+        perms = stat.filemode(st.st_mode)
+        size = str(int(st.st_size))
+        try:
+            mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+        except Exception:
+            mtime = "?"
+        return f"{perms}\t{size}\t{mtime}\t{name}"
+
     def _append(display: str) -> None:
         nonlocal truncated
         if len(out) >= max_entries:
@@ -92,8 +119,7 @@ def list_dir(
                 if len(out) >= max_entries:
                     truncated = True
                     break
-                name = entry.name + ("/" if entry.is_dir() else "")
-                _append(name)
+                _append(_format_entry(entry, rel=entry.name, is_dir=entry.is_dir()))
         else:
             # Depth is measured relative to the provided base directory.
             stack: list[tuple[Path, int]] = [(base, 0)]
@@ -121,7 +147,7 @@ def list_dir(
                         rel = entry.name
 
                     is_dir = entry.is_dir()
-                    _append(rel + ("/" if is_dir else ""))
+                    _append(_format_entry(entry, rel=rel, is_dir=is_dir))
 
                     if is_dir and depth < max_depth:
                         # Avoid following symlinked directories that could escape.

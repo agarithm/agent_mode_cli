@@ -32,7 +32,7 @@ class ConfirmState:
 
 
 def requires_confirmation(tool_name: Optional[str]) -> bool:
-    return tool_name in {"bash", "write_file", "edit_file"}
+    return tool_name in {"bash", "edit_file", "python_exec"}
 
 
 def prompt_for_confirmation(tool_name: str, arguments: Mapping[str, Any], state: ConfirmState) -> bool:
