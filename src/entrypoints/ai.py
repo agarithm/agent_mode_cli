@@ -5,18 +5,18 @@ import sys
 
 import ollama
 
-from agent_mode_cli.core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl
-from agent_mode_cli.core.cli_help import handle_common_flags
-from agent_mode_cli.core.system_prompt import build_internal_system_prompt
-from agent_mode_cli.providers.ollama.adapter import OllamaProviderAdapter
-from agent_mode_cli.providers.ollama.runtime import prepare_runtime
-from agent_mode_cli.providers.ollama.tools import build_tools as build_ollama_tools
-from agent_mode_cli.providers.copilot.adapter import CopilotProviderAdapter
-from agent_mode_cli.providers.copilot.runtime import create_github_models_client
-from agent_mode_cli.providers.copilot.tools import build_tools as build_copilot_tools
-from agent_mode_cli.providers.openai.adapter import OpenAIProviderAdapter
-from agent_mode_cli.providers.openai.runtime import create_openai_client
-from agent_mode_cli.providers.openai.tools import build_tools as build_openai_tools
+from core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl
+from core.cli_help import handle_common_flags
+from core.system_prompt import build_internal_system_prompt
+from providers.ollama.adapter import OllamaProviderAdapter
+from providers.ollama.runtime import prepare_runtime
+from providers.ollama.tools import build_tools as build_ollama_tools
+from providers.copilot.adapter import CopilotProviderAdapter
+from providers.copilot.runtime import create_github_models_client
+from providers.copilot.tools import build_tools as build_copilot_tools
+from providers.openai.adapter import OpenAIProviderAdapter
+from providers.openai.runtime import create_openai_client
+from providers.openai.tools import build_tools as build_openai_tools
 
 
 INTERNAL_SYSTEM_PROMPT = build_internal_system_prompt("AI")
@@ -24,7 +24,7 @@ INTERNAL_SYSTEM_PROMPT = build_internal_system_prompt("AI")
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    from agent_mode_cli import __version__
+    from version import __version__
 
     debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
     default_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"

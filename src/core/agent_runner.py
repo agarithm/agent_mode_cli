@@ -5,19 +5,19 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
-from agent_mode_cli.core.agent_loop import ToolCallInfo, process_line_with_tools
-from agent_mode_cli.core.confirm import ConfirmState, prompt_for_confirmation, requires_confirmation
-from agent_mode_cli.tools import bash_command
-from agent_mode_cli.tools import edit_file
-from agent_mode_cli.tools import http_fetch
-from agent_mode_cli.tools import list_dir, read_file
-from agent_mode_cli.tools import python_exec
-from agent_mode_cli.tools import search_files
-from agent_mode_cli.core.prompt_file import load_user_prompt
-from agent_mode_cli.core.repl import run_repl
-from agent_mode_cli.core.universal_context import ChatMessage, UniversalContext
-from agent_mode_cli.providers.base import ProviderAdapter, ProviderRateLimitError
-from agent_mode_cli.core.runtime_settings import RuntimeSettings
+from core.agent_loop import ToolCallInfo, process_line_with_tools
+from core.confirm import ConfirmState, prompt_for_confirmation, requires_confirmation
+from tools import bash_command
+from tools import edit_file
+from tools import http_fetch
+from tools import list_dir, read_file
+from tools import python_exec
+from tools import search_files
+from core.prompt_file import load_user_prompt
+from core.repl import run_repl
+from core.universal_context import ChatMessage, UniversalContext
+from providers.base import ProviderAdapter, ProviderRateLimitError
+from core.runtime_settings import RuntimeSettings
 
 
 @dataclass(frozen=True)

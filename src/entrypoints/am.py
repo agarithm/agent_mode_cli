@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import sys
 
-from agent_mode_cli.ai.app import main as ai_main
-from agent_mode_cli.core.cli_help import handle_common_flags
+from core.cli_help import handle_common_flags
+from entrypoints.ai import main as ai_main
 
 
 def _set_env(key: str, value: str) -> None:
@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     """
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    from agent_mode_cli import __version__
+    from version import __version__
 
     flag_exit = handle_common_flags(
         argv,

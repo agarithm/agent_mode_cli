@@ -6,6 +6,6 @@ Adding a new provider should generally mean:
 - Optionally provide runtime prep helpers and provider-specific tool schema builders.
 """
 
-from agent_mode_cli.providers.base import ProviderAdapter, ProviderRateLimitError
+from providers.base import ProviderAdapter, ProviderRateLimitError
 
 __all__ = ["ProviderAdapter", "ProviderRateLimitError"]

@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from agent_mode_cli.core.universal_context import ChatMessage
+from core.universal_context import ChatMessage
 
 
 @dataclass(frozen=True)

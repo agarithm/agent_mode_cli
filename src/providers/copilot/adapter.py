@@ -6,10 +6,10 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
 
-from agent_mode_cli.core.agent_loop import ParseResult, ToolCallInfo, safe_json_loads
-from agent_mode_cli.core.universal_context import ChatMessage, ToolCall, UniversalContext
-from agent_mode_cli.providers.base import ProviderRateLimitError
-from agent_mode_cli.providers.copilot.runtime import maybe_resolve_model_alias, resolve_gemini_model
+from core.agent_loop import ParseResult, ToolCallInfo, safe_json_loads
+from core.universal_context import ChatMessage, ToolCall, UniversalContext
+from providers.base import ProviderRateLimitError
+from providers.copilot.runtime import maybe_resolve_model_alias, resolve_gemini_model
 
 
 def _to_chat_completions_messages(messages: Sequence[ChatMessage]) -> List[Dict[str, Any]]:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Protocol, Sequence
 
-from agent_mode_cli.core.agent_loop import ParseResult
-from agent_mode_cli.core.universal_context import UniversalContext
+from core.agent_loop import ParseResult
+from core.universal_context import UniversalContext
 
 
 class ProviderRateLimitError(RuntimeError):

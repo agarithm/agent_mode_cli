@@ -4,8 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence
 
-from agent_mode_cli.core.agent_loop import ParseResult, ToolCallInfo
-from agent_mode_cli.core.universal_context import ChatMessage, ToolCall, UniversalContext
+from core.agent_loop import ParseResult, ToolCallInfo
+from core.universal_context import ChatMessage, ToolCall, UniversalContext
 
 
 def _to_ollama_chat_messages(messages: Sequence[ChatMessage]) -> List[Dict[str, Any]]:

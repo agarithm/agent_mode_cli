@@ -17,6 +17,6 @@ This folder contains provider-specific code in a predictable layout.
    - `parse_response(response, debug) -> ParseResult`
 3. (Optional) Add runtime helpers in `providers/foo/runtime.py` if the provider needs setup.
 4. Implement a tool schema mapper in `providers/foo/tools.py` that exports `build_tools(prefix)`.
-5. Wire it into the REPL by adding a `ProviderEntry` in `src/agent_mode_cli/ai/app.py`.
+5. Wire it into the REPL by adding a `ProviderEntry` in `src/entrypoints/ai.py`.
 
 That’s it — the core agent loop should not need changes.

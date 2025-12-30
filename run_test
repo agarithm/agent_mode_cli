@@ -8,7 +8,7 @@ from pathlib import Path
 def _find_repo_root(start: Path) -> Path | None:
     current = start.resolve()
     for _ in range(10):
-        candidate = current / "src" / "agent_mode_cli" / "__init__.py"
+        candidate = current / "src" / "entrypoints" / "ai.py"
         if candidate.is_file():
             return current
         if current.parent == current:
@@ -18,13 +18,11 @@ def _find_repo_root(start: Path) -> Path | None:
 
 
 def _usage() -> None:
-    print("usage: ./run_test <ai|am|om|cm> [args...]", file=sys.stderr)
+    print("usage: ./run_test <ai|am> [args...]", file=sys.stderr)
     print("", file=sys.stderr)
     print("tools:", file=sys.stderr)
     print("  ai  unified agent REPL (multi-provider; default Ollama)", file=sys.stderr)
     print("  am  compatibility alias (defaults provider to OpenAI)", file=sys.stderr)
-    print("  om  compatibility alias (defaults provider to Ollama)", file=sys.stderr)
-    print("  cm  compatibility alias (defaults provider to Copilot / GitHub Models)", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,13 +33,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     tool = argv.pop(0)
-    if tool not in {"ai", "am", "om", "cm"}:
+    if tool not in {"ai", "am"}:
         _usage()
         return 2
 
     repo_root = _find_repo_root(Path(__file__).parent)
     if repo_root is None:
-        print("error: could not locate repo root containing src/agent_mode_cli", file=sys.stderr)
+        print("error: could not locate repo root containing src/entrypoints/ai.py", file=sys.stderr)
         return 1
 
     src_dir = repo_root / "src"
@@ -52,13 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     sys.path.insert(0, str(src_dir))
 
     if tool == "ai":
-        from agent_mode_cli.ai.app import main as tool_main
-    elif tool == "am":
-        from agent_mode_cli.am.app import main as tool_main
-    elif tool == "cm":
-        from agent_mode_cli.cm.app import main as tool_main
+        from entrypoints.ai import main as tool_main
     else:
-        from agent_mode_cli.om.app import main as tool_main
+        from entrypoints.am import main as tool_main
 
     return int(tool_main(argv=argv))
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from agent_mode_cli.providers._raw_tools import raw_tool_specs
+from providers._raw_tools import raw_tool_specs
 
 
 def build_tools(prefix: str) -> List[Dict[str, Any]]:

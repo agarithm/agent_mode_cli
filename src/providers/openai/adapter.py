@@ -4,9 +4,9 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence
 
-from agent_mode_cli.core.agent_loop import ParseResult, ToolCallInfo, safe_json_loads
-from agent_mode_cli.core.universal_context import ChatMessage, ToolCall, UniversalContext
-from agent_mode_cli.providers.base import ProviderRateLimitError
+from core.agent_loop import ParseResult, ToolCallInfo, safe_json_loads
+from core.universal_context import ChatMessage, ToolCall, UniversalContext
+from providers.base import ProviderRateLimitError
 
 
 def _to_openai_responses_input(messages: Sequence[ChatMessage]) -> List[Dict[str, Any]]:
