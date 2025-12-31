@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
 
     debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
     default_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
-    default_ollama_model = os.getenv("AI_MODEL", "qwen2.5-coder:32b")
+    default_ollama_model = os.getenv("AI_MODEL", "gpt-oss:latest")
 
     flag_exit = handle_common_flags(
         argv,

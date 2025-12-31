@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from core.agent_loop import ParseResult, ToolCallInfo
 from core.universal_context import ChatMessage, ToolCall, UniversalContext
@@ -80,41 +80,74 @@ class OllamaProviderAdapter:
         except Exception:
             return {"value": arguments}
 
+    def _parse_leading_json(self, text: str) -> Tuple[Any | None, str]:
+        if not text:
+            return None, ""
+        stripped = text.lstrip()
+        if not stripped.startswith(("{", "[")):
+            return None, text
+        decoder = json.JSONDecoder()
+        try:
+            payload, end = decoder.raw_decode(stripped)
+        except ValueError:
+            return None, text
+        remainder = stripped[end:].strip()
+        return payload, remainder
+
     def _extract_tool_call_specs_from_json(self, payload: Any) -> List[tuple[str, Dict[str, Any]]]:
         specs: List[tuple[str, Dict[str, Any]]] = []
         seen: set[tuple[str, str]] = set()
 
+        name_keys = ("name", "tool_name", "function_name", "call_name", "action", "tool")
+        argument_keys = (
+            "arguments",
+            "args",
+            "parameters",
+            "params",
+            "input",
+            "inputs",
+            "tool_args",
+            "tool_input",
+            "payload",
+            "data",
+        )
+
+        def _record(name: str, arguments: Any) -> None:
+            normalized = self._normalize_arguments(arguments)
+            signature = (name.strip(), json.dumps(normalized, sort_keys=True, default=str))
+            if signature in seen:
+                return
+            seen.add(signature)
+            specs.append((name.strip(), normalized))
+
+        def _maybe_collect(node: Mapping[str, Any]) -> None:
+            candidate_names: list[str] = []
+            for key in name_keys:
+                value = node.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidate_names.append(value.strip())
+
+            if not candidate_names:
+                return
+
+            for name in candidate_names:
+                for arg_key in argument_keys:
+                    if arg_key not in node:
+                        continue
+                    arguments = node[arg_key]
+                    if arguments is None:
+                        continue
+                    _record(name, arguments)
+                    break
+
         def _walk(node: Any) -> None:
             if isinstance(node, Mapping):
-                tool_calls = node.get("tool_calls")
-                if isinstance(tool_calls, Sequence) and not isinstance(tool_calls, (str, bytes, bytearray)):
-                    for item in tool_calls:
-                        _walk(item)
-
-                function_obj = node.get("function")
-                if isinstance(function_obj, Mapping):
-                    name = function_obj.get("name")
-                    arguments = function_obj.get("arguments")
-                    if isinstance(name, str) and name.strip() and arguments is not None:
-                        normalized = self._normalize_arguments(arguments)
-                        signature = (name.strip(), json.dumps(normalized, sort_keys=True, default=str))
-                        if signature not in seen:
-                            seen.add(signature)
-                            specs.append((name.strip(), normalized))
-
-                name = node.get("name")
-                arguments = node.get("arguments")
-                if isinstance(name, str) and name.strip() and arguments is not None:
-                    normalized = self._normalize_arguments(arguments)
-                    signature = (name.strip(), json.dumps(normalized, sort_keys=True, default=str))
-                    if signature not in seen:
-                        seen.add(signature)
-                        specs.append((name.strip(), normalized))
-
-                call_obj = node.get("call")
-                if isinstance(call_obj, Mapping):
-                    _walk(call_obj)
-
+                _maybe_collect(node)
+                for value in node.values():
+                    if isinstance(value, Mapping):
+                        _walk(value)
+                    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+                        _walk(value)
             elif isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
                 for item in node:
                     _walk(item)
@@ -155,9 +188,15 @@ class OllamaProviderAdapter:
 
         parsed_json: Any = None
         extracted_text: str | None = None
+        trailing_text: str = ""
 
-        # Detect if response is JSON (models like qwen2.5-coder return JSON-formatted responses)
-        if assistant_content and assistant_content.startswith(("{", "[")):
+        # Detect if response includes a JSON payload followed by narration (common for qwen models).
+        candidate_json, remainder_text = self._parse_leading_json(assistant_content)
+        if candidate_json is not None:
+            parsed_json = candidate_json
+            trailing_text = remainder_text
+            assistant_content = remainder_text
+        elif assistant_content and assistant_content.startswith(("{", "[")):
             try:
                 parsed_json = json.loads(assistant_content)
             except (json.JSONDecodeError, ValueError):
@@ -190,6 +229,14 @@ class OllamaProviderAdapter:
                         break
                 if extracted_text:
                     break
+
+        if extracted_text:
+            if trailing_text:
+                assistant_content = f"{extracted_text}\n\n{trailing_text}".strip()
+            else:
+                assistant_content = extracted_text
+        elif parsed_json is not None and not assistant_content and trailing_text:
+            assistant_content = trailing_text
 
         raw_tool_calls = list(getattr(message, "tool_calls", None) or [])
         fallback_tool_specs: List[tuple[str, Dict[str, Any]]] = []
