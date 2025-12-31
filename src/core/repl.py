@@ -16,16 +16,26 @@ def run_repl(
     before_first_prompt: Callable[[], None],
     process_line: Callable[[str], str],
     after_each_prompt: Callable[[], None],
+    prompt_provider: Optional[Callable[[], str]] = None,
 ) -> int:
     console = Console() if Console is not None else None
+
+    def _prompt() -> str:
+        if prompt_provider is None:
+            return "> "
+        try:
+            value = prompt_provider() or "> "
+        except Exception:
+            value = "> "
+        return f"{value}"
 
     def _render_result(result: str) -> None:
         text = (result or "").rstrip()
         if console is None or Markdown is None:
-            print(f">>> {text}\n")
+            print(f">>>>>>>>>\n{text}\n")
             return
 
-        console.print("[bold cyan]>>>[/bold cyan]", end=" ")
+        console.print(">>>>>>>>>", style="bold cyan", markup=False)
         try:
             markdown = Markdown(text or "")
             console.print(markdown)
@@ -45,7 +55,12 @@ def run_repl(
             _render_result(result)
 
         while True:
-            line = input("> ")
+            prompt_text = _prompt()
+            if console is None:
+                line = input(prompt_text)
+            else:
+                console.print(prompt_text, style="bold cyan", end="", markup=False)
+                line = input()
             if not line.strip():
                 continue
             if line.strip().lower() in ("exit", "quit", "q"):

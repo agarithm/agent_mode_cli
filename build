@@ -118,7 +118,6 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out).resolve()
     built: list[Path] = []
     built.append(build_one("ai", "entrypoints.ai", out_dir))
-    built.append(build_one("am", "entrypoints.am", out_dir))
 
     print("Built:")
     for path in built:

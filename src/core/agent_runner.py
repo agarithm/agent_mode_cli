@@ -16,6 +16,7 @@ from tools import search_files
 from core.prompt_file import load_user_prompt
 from core.repl import run_repl
 from core.universal_context import ChatMessage, UniversalContext
+from core.token_usage import estimate_context_tokens, get_model_context_limit
 from providers.base import ProviderAdapter, ProviderRateLimitError
 from core.runtime_settings import RuntimeSettings
 
@@ -361,11 +362,27 @@ def run_agent_repl(
 
         if lowered == ":model" or lowered.startswith(":model "):
             target = raw[len(":model") :].strip()
-            if not target:
+            if not target or target.lower() in {"list", "ls"}:
                 return _format_model_status(provider_name=active_provider)
-            new_model = target
-            models_by_provider[active_provider] = new_model
-            os.environ[config.model_env] = new_model
+            entry = providers[active_provider]
+            candidate_model = target.strip()
+            try:
+                if entry.validate_model is not None:
+                    validated_model = entry.validate_model(candidate_model, settings.debug)
+                    candidate_model = validated_model
+                else:
+                    adapter = _get_or_create_adapter(active_provider)
+                    available_models = [m.strip() for m in adapter.list_models(debug=settings.debug) if (m or "").strip()]
+                    if available_models and candidate_model not in available_models:
+                        return (
+                            f"error: unknown model '{target}' for provider '{active_provider}'.\n\n"
+                            f"{_format_model_status(provider_name=active_provider)}"
+                        )
+            except Exception as exc:
+                return f"error: failed to validate model '{target}': {exc}"
+
+            models_by_provider[active_provider] = candidate_model
+            os.environ[config.model_env] = candidate_model
             _announce_active_provider_and_model("user requested")
             return _format_model_status(provider_name=active_provider)
 
@@ -521,9 +538,18 @@ def run_agent_repl(
             append_context(ChatMessage(role="system", content=user_prompt))
         _announce_active_provider_and_model("session start")
 
+    def _prompt_string() -> str:
+        model = _active_model_for(active_provider)
+        label = model or active_provider or "agent"
+        used_tokens = estimate_context_tokens(context.messages, model=model)
+        limit = get_model_context_limit(model)
+        limit_text = str(limit) if limit is not None else "?"
+        return f"[{label}] [{used_tokens}:{limit_text}] > "
+
     return run_repl(
         initial_line=initial_line,
         before_first_prompt=before_first_prompt,
         process_line=process,
         after_each_prompt=state.reset_after_prompt,
+        prompt_provider=_prompt_string,
     )
