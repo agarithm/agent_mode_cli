@@ -17,9 +17,9 @@ def js_web_fetch(
     max_chars: int = _DEFAULT_MAX_CHARS,
     user_agent: Optional[str] = None,
 ) -> str:
-    """Fetch a URL using a real headless browser (JS enabled).
+    """Fetch a web URL using a real headless browser (JS enabled).
 
-    Backed by Playwright (Chromium). This is intended as a fallback for sites
+    Backed by Playwright (Chromium). This is intended as a fallback for websites
     that require JavaScript rendering and return insufficient HTML to basic
     HTTP fetchers.
     """

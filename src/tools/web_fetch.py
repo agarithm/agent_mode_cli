@@ -62,9 +62,9 @@ def web_fetch(
     max_chars: int = _DEFAULT_MAX_CHARS,
     headers: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    """Fetch a URL over HTTP(S) and return content.
+    """Fetch a web URL over HTTP(S) and return content.
 
-    This is a lightweight, non-JS fetch designed to be safer and more reliable
+    This is a lightweight, non-JS web fetch designed to be safer and more reliable
     than shelling out to curl. It follows redirects and optionally extracts
     readable text from HTML.
     """

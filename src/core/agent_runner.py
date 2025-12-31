@@ -85,8 +85,6 @@ def run_agent_repl(
     initial_model_env = (os.getenv(config.model_env) or "").strip()
     if initial_model_env:
         models_by_provider[provider_key] = initial_model_env
-    elif (config.initial_model or "").strip():
-        models_by_provider[provider_key] = (config.initial_model or "").strip()
 
     context = UniversalContext()
     state = ConfirmState(approve_all=False, debug=settings.debug)
@@ -210,11 +208,41 @@ def run_agent_repl(
     def append_context(message: ChatMessage) -> None:
         context.append(message, debug=settings.debug)
 
+    def _error_implies_missing_model(exc: Exception) -> bool:
+        code = getattr(exc, "code", None)
+        if isinstance(code, str) and "model" in code.lower():
+            return True
+        error_payload = getattr(exc, "error", None)
+        if isinstance(error_payload, dict):
+            nested_code = error_payload.get("code")
+            if isinstance(nested_code, str) and "model" in nested_code.lower():
+                return True
+            nested_message = error_payload.get("message")
+            if isinstance(nested_message, str):
+                lowered = nested_message.lower()
+                if "model" in lowered and any(token in lowered for token in ("not found", "does not exist", "unknown")):
+                    return True
+        text = str(exc).lower()
+        return "model" in text and any(token in text for token in ("not found", "does not exist", "unknown", "invalid"))
+
     def call_model() -> Any:
         active_model = (models_by_provider.get(active_provider) or "").strip()
         if not active_model:
             active_model = (providers[active_provider].default_model or "").strip()
-        return active_adapter.call_model(model=active_model, tools=active_tools, context=context, debug=settings.debug)
+        try:
+            return active_adapter.call_model(model=active_model, tools=active_tools, context=context, debug=settings.debug)
+        except Exception as exc:
+            if _error_implies_missing_model(exc):
+                fallback_model = (providers[active_provider].default_model or "").strip()
+                if fallback_model and fallback_model != active_model:
+                    models_by_provider[active_provider] = fallback_model
+                    os.environ[config.model_env] = fallback_model
+                    _announce_active_provider_and_model("auto-reset after invalid model")
+                    raise RuntimeError(
+                        f"provider '{active_provider}' rejected model '{active_model}'. "
+                        f"Reset to default '{fallback_model}'. Please retry your prompt."
+                    ) from exc
+            raise
 
     def _active_model_for(name: str) -> str:
         model = (models_by_provider.get(name) or "").strip()
@@ -491,6 +519,12 @@ def run_agent_repl(
                 append_context(ChatMessage(role="assistant", content=message))
                 return message
             except RuntimeError as exc:
+                error_message = f"error: {exc}"
+                append_context(ChatMessage(role="assistant", content=error_message))
+                return error_message
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
                 error_message = f"error: {exc}"
                 append_context(ChatMessage(role="assistant", content=error_message))
                 return error_message
