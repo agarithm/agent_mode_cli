@@ -13,48 +13,29 @@ except Exception:  # pragma: no cover - optional dependency missing
     tiktoken = None  # type: ignore
 
 
-_DEFAULT_MODEL_LIMITS = {
-    "gpt-5.1-codex": 128_000,
-    "gpt-4o": 128_000,
-    "gpt-4o-mini": 64_000,
-    "gpt-4.1": 128_000,
-    "gpt-4.1-mini": 128_000,
-    "gpt-4.1-nano": 64_000,
-    "qwen2.5-coder:32b": 32_768,
-    "qwen2.5-coder:14b": 32_768,
-    "gpt-oss:latest": 8_192,
-    "xai/grok-3": 131_072,
-}
+_CONTEXT_WINDOW_FALLBACK = 4_000
 
 
-def _env_override_for_model(model: str) -> Optional[int]:
-    """Return an env override for the given model name if present."""
+def _resolve_global_context_limit() -> int:
+    """Resolve the single shared context limit across all models."""
 
-    generic = os.getenv("AI_MODEL_CONTEXT_LIMIT")
-    if generic:
+    for env_var in ("AI_CONTEXT_WINDOW", "AI_CONTEXT_LIMIT", "AI_MODEL_CONTEXT_LIMIT"):
+        raw_value = os.getenv(env_var)
+        if not raw_value:
+            continue
         try:
-            return max(0, int(generic))
+            return max(0, int(raw_value))
         except ValueError:
-            pass
+            continue
+    return _CONTEXT_WINDOW_FALLBACK
 
-    normalized = "".join(ch if ch.isalnum() else "_" for ch in model).upper()
-    for suffix in ("CONTEXT_LIMIT", "MAX_TOKENS", "CONTEXT_TOKENS"):
-        override = os.getenv(f"AI_MODEL_{normalized}_{suffix}")
-        if override:
-            try:
-                return max(0, int(override))
-            except ValueError:
-                continue
-    return None
+
+_GLOBAL_CONTEXT_LIMIT = _resolve_global_context_limit()
 
 
 def get_model_context_limit(model: Optional[str]) -> Optional[int]:
-    if not model:
-        return None
-    override = _env_override_for_model(model)
-    if override:
-        return override
-    return _DEFAULT_MODEL_LIMITS.get(model)
+    del model  # unused; legacy signature kept for compatibility
+    return _GLOBAL_CONTEXT_LIMIT
 
 
 @lru_cache(maxsize=64)
