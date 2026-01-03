@@ -1,0 +1,41 @@
+IGNORE START
+INTERNAL NOTES - DO NOT ACTION THESE - THESE ITEMS ARE NOT YET READY FOR DESIGN or DEFINITION
+
+- automatically upgrade to better model when ollama flags
+- containerized md and remove all guards YOLO it! --> Make it a command? (branch, build container, start, shell into it, and continue with current chat history and YOLO set to true)
+- token counter and knowing model limits,
+- invoking token compression techniques like sumamrize task list, identify remaining tasks, and summarize X chat lines deep from current conversation.
+- Anthropic Claude support
+
+- run_source [provider] [model]  --> still broken
+- set the token limit to 4000 for all models as a base limit for the tool: saves cost and fits more models.  devise a compression strategy when limit is half full. --> don't send the whole chat history, use summary for items older than 4 turns ago.
+
+- keyboard interrupt when model is generating a long response any time during generation
+
+- Also these ideas on Context Window Management: https://github.com/robert-hoffmann/prompts/blob/main/docs%2FREADME.md
+- Mixture of experts: (it's hard coded prompts and actions --> waterfall!
+    - intent interpreter and planner
+    - project manager:
+        - takes the plan, executes sub tasks as independant items each with own context
+    - Code Agent:
+        - completes each task as issolated actions
+    - QA checks the work (per task)
+    - Architect Monitor progress and evaluates the plan progress, results, and forecasts whether
+
+Key Findings
+
+- agent_runner.py:541-554 calls estimate_context_tokens() on every prompt render, which re-encodes the entire context.messages list each time (token_usage.py:110-117). Because the history only ever grows, prompt latency now increases linearly with conversation length and can become seconds-long when tiktoken is installed. A better approach is to let UniversalContext.append() maintain an incremental token counter (or cache per-message counts) and have _prompt_string() read the cached total in O(1) time.
+- The displayed context limit relies on the tiny _DEFAULT_MODEL_LIMITS table (token_usage.py:12-25) plus ad-hoc env overrides. Any provider/model outside that hard-coded list just shows "?", so the new prompt rarely surfaces meaningful data. Consider plumbing an optional context_limit field through ProviderEntry or exposing adapter.get_model_metadata(model) so each provider can supply authoritative limits instead of a static global dictionary.
+- The stricter :model handling now blocks switching to a model unless adapter.list_models() reports it (agent_runner.py:363-383). Many adapters either don’t implement listing or expose only a curated subset, so known-good model IDs (beta builds, private deployments, etc.) are rejected and the user can no longer override them. A safer pattern is to treat the list as advisory—warn when a name isn’t found but still allow the switch (possibly behind a --force flag or confirmation prompt) instead of hard-failing.
+- Plain-terminal output regressed: _render_result() now prints ">>>>>>>>>\n{text}\n" blocks for every response (repl.py:32-46). That means two extra blank lines per turn, noisy banners, and it breaks anyone piping the CLI output into tools that expected the previous one-line >>> result format. Ideally make the richer formatting opt-in (e.g., controlled by a verbosity flag) and keep the simple single-line output as the default for non-rich consoles.
+
+Suggested Direction
+
+- Track token totals incrementally inside UniversalContext (or a lightweight wrapper) so the REPL prompt can display usage without rescanning history; add guards so heavy computation never runs on the hot input path.
+- Replace the global limit map with provider-sourced metadata (additional ProviderEntry fields, or adapter methods) and fall back to None only when the provider truly can’t tell you.
+- Relax the new model validation to warn rather than hard-block when list_models() doesn’t include the requested ID, while still supporting provider-specific validators.
+- Reintroduce the original plain-text result format (or make the new banners configurable) to avoid breaking CLI consumers and keep transcripts compact.
+
+
+INTERNAL NOTES - DO NOT ACTION THESE - THESE ITEMS ARE NOT YET READY FOR DESIGN or DEFINITION
+IGNORE END
