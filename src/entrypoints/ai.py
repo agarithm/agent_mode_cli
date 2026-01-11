@@ -82,8 +82,8 @@ def _maybe_run_inside_container(argv: list[str]) -> None:
 
     # Docker-specific vs Podman-specific flags
     is_podman = "podman" in podman_bin.lower()
-    userns_flags = ["--userns=keep-id"] if is_podman else []
-    volume_suffix = ":Z" if is_podman else ""
+    userns_flags = ["--userns=keep-id"] if is_podman else ["--user", f"{os.getuid()}:{os.getgid()}"]
+    volume_suffix = ":rw,Z" if is_podman else ":rw"
     gpu_flags = ["--gpus", "all"] if not is_podman else ["--device", "nvidia.com/gpu=all"]
 
     cmd = [

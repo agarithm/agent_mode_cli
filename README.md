@@ -121,8 +121,8 @@ ai copilot
 Use the dev wrapper script to run the tool directly from `src/` (no `dist/` build needed):
 
 ```bash
-./run_source
-./run_source openai gpt-4.1
+./test
+./test openai gpt-4.1
 ```
 ## Ollama Setup
 To use the Ollama provider, you need to have the Ollama CLI installed and a local Ollama model running.
