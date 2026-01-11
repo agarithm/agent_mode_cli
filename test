@@ -18,8 +18,8 @@ def _find_repo_root(start: Path) -> Path | None:
 
 
 def _usage() -> None:
-    print("usage: ./run_source [provider] [model] [prompt or :command]", file=sys.stderr)
-    print("       ./run_source", file=sys.stderr)
+    print("usage: ./test [provider] [model] [prompt or :command]", file=sys.stderr)
+    print("       ./test", file=sys.stderr)
     print("", file=sys.stderr)
     print("launch the source REPL with the same optional provider/model prefix as the installed 'ai' CLI", file=sys.stderr)
 
