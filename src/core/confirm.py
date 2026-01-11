@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
+
+
+def _in_container() -> bool:
+    """Check if running inside a container environment."""
+    return os.getenv("AI_IN_CONTAINER", "").lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -36,6 +42,12 @@ def requires_confirmation(tool_name: Optional[str]) -> bool:
 
 
 def prompt_for_confirmation(tool_name: str, arguments: Mapping[str, Any], state: ConfirmState) -> bool:
+    # Skip confirmations when running inside a container
+    if _in_container():
+        if state.debug:
+            print(f"[debug] auto-approved '{tool_name}' (running in container)", file=sys.stderr)
+        return True
+    
     if state.approve_all:
         if state.debug:
             if tool_name == "bash":

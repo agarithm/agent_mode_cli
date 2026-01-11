@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
 SRC_ROOT = ROOT / "src"
+DOCKERFILE = ROOT / "rsc" / "Dockerfile"
 
 
 def _module_name_for_path(path: Path) -> str:
@@ -110,9 +115,30 @@ def build_one(name: str, entry_module: str, out_dir: Path) -> Path:
     return out_path
 
 
+def _build_container_image(image_tag: str, container_bin: str, dockerfile: Path) -> bool:
+    if not dockerfile.exists():
+        print(f"Skipping container image build: missing {dockerfile}", file=sys.stderr)
+        return False
+    if shutil.which(container_bin) is None:
+        print(f"Skipping container image build: '{container_bin}' not found in PATH", file=sys.stderr)
+        return False
+
+    cmd = [container_bin, "build", "--file", str(dockerfile), "--tag", image_tag, str(ROOT)]
+    print(f"Building container image: {shlex.join(cmd)}")
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        print(f"error: container image build failed with exit code {exc.returncode}", file=sys.stderr)
+        raise
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build single-file CLIs from src/")
     parser.add_argument("--out", default=str(ROOT / "dist"), help="Output directory (default: ./dist)")
+    parser.add_argument("--skip-container", action="store_true", help="Skip building the container image")
+    parser.add_argument("--container-image", default="localhost/agent-mode-dev:latest", help="Container image tag")
+    parser.add_argument("--container-bin", default="docker", help="Container binary (docker or podman)")
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out).resolve()
@@ -122,6 +148,10 @@ def main(argv: list[str] | None = None) -> int:
     print("Built:")
     for path in built:
         print(f"- {path}")
+
+    if not args.skip_container:
+        _build_container_image(args.container_image, args.container_bin, DOCKERFILE)
+
     return 0
 
 
