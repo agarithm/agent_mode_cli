@@ -84,12 +84,14 @@ def _maybe_run_inside_container(argv: list[str]) -> None:
     is_podman = "podman" in podman_bin.lower()
     userns_flags = ["--userns=keep-id"] if is_podman else []
     volume_suffix = ":Z" if is_podman else ""
+    gpu_flags = ["--gpus", "all"] if not is_podman else ["--device", "nvidia.com/gpu=all"]
 
     cmd = [
         podman_bin,
         "run",
         "--rm",
         *userns_flags,
+        *gpu_flags,
         *stdio_flags,
         *_collect_env_passthrough(),
         "--volume",

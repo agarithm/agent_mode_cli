@@ -25,13 +25,15 @@ RUN bash -c '\
 '
 
 # Stage 2: Main runtime image
-FROM ubuntu:24.04
+FROM nvidia/cuda:12.6.3-base-ubuntu24.04
 
 LABEL org.opencontainers.image.title="agent-mode-dev"
 LABEL org.opencontainers.image.description="Agent-mode CLI developer workspace"
 LABEL org.opencontainers.image.source="https://github.com/???"
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV OLLAMA_HOME=/opt/ollama
 ENV OLLAMA_MODELS=/opt/ollama/models
