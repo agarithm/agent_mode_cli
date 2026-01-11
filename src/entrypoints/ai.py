@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-import ollama
+if TYPE_CHECKING:  # pragma: no cover
+    import ollama  # noqa: F401
 
 from core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl
 from core.cli_help import handle_common_flags
@@ -22,10 +25,101 @@ from providers.openai.tools import build_tools as build_openai_tools
 
 
 INTERNAL_SYSTEM_PROMPT = build_internal_system_prompt("AI")
+CONTAINER_ENV_FLAG = "AI_IN_CONTAINER"
+DEFAULT_CONTAINER_IMAGE = os.getenv("AI_CONTAINER_IMAGE", "localhost/agent-mode-dev:latest")
+DEFAULT_PODMAN_BIN = os.getenv("PODMAN_BIN", "docker")
+
+
+def _is_truthy(value: str) -> bool:
+    return value.lower() in ("1", "true", "yes", "on")
+
+
+def _running_inside_container() -> bool:
+    return _is_truthy(os.getenv(CONTAINER_ENV_FLAG, ""))
+
+
+def _container_launch_disabled() -> bool:
+    return _is_truthy(os.getenv("AI_CONTAINER_DISABLE", ""))
+
+
+_ENV_PASSTHROUGH_DENYLIST = {CONTAINER_ENV_FLAG, "HOME"}
+
+
+def _collect_env_passthrough() -> list[str]:
+    flags: list[str] = []
+    for key, value in os.environ.items():
+        if key in _ENV_PASSTHROUGH_DENYLIST:
+            continue
+        if "=" in key or "\n" in key or "\x00" in key:
+            continue
+        if isinstance(value, str) and ("\n" in value or "\x00" in value):
+            continue
+        flags.extend(["--env", f"{key}={value}"])
+    flags.extend(["--env", f"{CONTAINER_ENV_FLAG}=1"])
+    return flags
+
+
+def _maybe_run_inside_container(argv: list[str]) -> None:
+    if _running_inside_container() or _container_launch_disabled():
+        return
+
+    podman_bin = os.getenv("PODMAN_BIN", DEFAULT_PODMAN_BIN)
+    if shutil.which(podman_bin) is None:
+        print(
+            f"warning: '{podman_bin}' not found; running natively without container",
+            file=sys.stderr,
+        )
+        return
+
+    cwd = os.getcwd()
+    if not cwd:
+        return
+
+    container_image = os.getenv("AI_CONTAINER_IMAGE", DEFAULT_CONTAINER_IMAGE)
+    stdio_flags = ["--interactive"]
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        stdio_flags.append("--tty")
+
+    # Docker-specific vs Podman-specific flags
+    is_podman = "podman" in podman_bin.lower()
+    userns_flags = ["--userns=keep-id"] if is_podman else []
+    volume_suffix = ":Z" if is_podman else ""
+
+    cmd = [
+        podman_bin,
+        "run",
+        "--rm",
+        *userns_flags,
+        *stdio_flags,
+        *_collect_env_passthrough(),
+        "--volume",
+        f"{cwd}:{cwd}{volume_suffix}",
+        "--workdir",
+        cwd,
+        container_image,
+        "ai",
+        *argv,
+    ]
+
+    print(
+        f"[ai] launching container '{container_image}' via {podman_bin} for current directory",
+        file=sys.stderr,
+    )
+    try:
+        result = subprocess.run(cmd)
+    except FileNotFoundError:
+        print(
+            f"error: unable to execute '{podman_bin}' for container launch",
+            file=sys.stderr,
+        )
+        raise
+
+    raise SystemExit(result.returncode)
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    _maybe_run_inside_container(argv)
     from version import __version__
 
     debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
@@ -55,7 +149,13 @@ def main(argv: list[str] | None = None) -> int:
         return flag_exit
 
     def _create_ollama_adapter() -> OllamaProviderAdapter:
-        client = ollama.Client()
+        try:
+            import ollama as _ollama  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "ollama Python package is not available. Run inside the dev container or install it manually."
+            ) from exc
+        client = _ollama.Client()
         return OllamaProviderAdapter(client=client)
 
     def _create_openai_adapter() -> OpenAIProviderAdapter:
