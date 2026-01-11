@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sys.path.insert(0, str(src_dir))
 
+    import os
+    os.environ["AI_CONTAINER_DISABLE"] = "1"
+
     from entrypoints.ai import main as tool_main
 
     return int(tool_main(argv=argv))
