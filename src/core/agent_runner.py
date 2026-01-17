@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
@@ -19,6 +20,7 @@ from core.universal_context import ChatMessage, UniversalContext
 from core.token_usage import estimate_context_tokens, get_model_context_limit
 from providers.base import ProviderAdapter, ProviderRateLimitError
 from core.runtime_settings import RuntimeSettings
+from core.session_log import SessionLogger
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,17 @@ def run_agent_repl(
         max_tool_iterations=int(config.max_tool_iterations),
         max_tool_seconds=config.max_tool_seconds,
     )
+
+    sloppy_enabled = SessionLogger.is_enabled_from_env()
+    sloppy_max_inline = int(os.getenv("AI_SLOPPY_MAX_INLINE_CHARS", "2000000") or "2000000")
+    sloppy_root = SessionLogger.default_root_dir()
+    session_logger = SessionLogger(
+        root_dir=sloppy_root,
+        session_id=SessionLogger.new_session_id(prefix=config.agent_name.lower() or "session"),
+        enabled=sloppy_enabled,
+        max_inline_chars=sloppy_max_inline,
+        debug=settings.debug,
+    )
     # Model is tracked per-provider so switching doesn't inherit a nonsense model name.
     models_by_provider: Dict[str, str] = {
         key: (entry.default_model or "").strip() for key, entry in providers.items()
@@ -98,6 +111,63 @@ def run_agent_repl(
 
     rate_limited_until: Dict[str, float] = {}
     default_retry_after_seconds = float(os.getenv("AI_FALLBACK_DEFAULT_RETRY_AFTER", "300") or "300")
+
+    def _fallback_prompt_enabled() -> bool:
+        value = (os.getenv("AI_FALLBACK_PROMPT") or "").strip().lower()
+        if value in {"0", "false", "off", "no"}:
+            return False
+        # Only prompt when interactive; piped input should behave deterministically.
+        try:
+            return bool(sys.stdin.isatty())
+        except Exception:
+            return False
+
+    def _prompt_select_provider(
+        *,
+        title: str,
+        candidates: Sequence[str],
+        default_provider: str,
+    ) -> Optional[str]:
+        """Prompt user to pick a provider; returns provider name or None to cancel."""
+
+        if not _fallback_prompt_enabled():
+            return default_provider
+
+        cleaned = [c.strip().lower() for c in candidates if (c or "").strip()]
+        # De-dupe while preserving order.
+        seen: set[str] = set()
+        cleaned = [c for c in cleaned if not (c in seen or seen.add(c))]
+        if not cleaned:
+            return None
+
+        print()
+        print(title)
+        for i, name in enumerate(cleaned, 1):
+            model = _active_model_for(name)
+            note = ""
+            remaining = _remaining_rate_limit_seconds(name)
+            if remaining and remaining > 0:
+                note = f" (rate-limited ~{remaining:.0f}s)"
+            print(f"  {i}) {name}  model={model}{note}")
+        print("  q) cancel")
+
+        while True:
+            try:
+                raw = input(f"Select provider [default {default_provider}]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                return None
+            if not raw:
+                return default_provider
+            if raw.lower() in {"q", "quit", "cancel"}:
+                return None
+            if raw.isdigit():
+                idx = int(raw, 10)
+                if 1 <= idx <= len(cleaned):
+                    return cleaned[idx - 1]
+            candidate = raw.strip().lower()
+            if candidate in cleaned:
+                return candidate
+            print("Invalid selection. Enter a number, provider name, or 'q'.")
 
     def _get_or_create_adapter(name: str) -> ProviderAdapter:
         if name in adapter_cache:
@@ -207,6 +277,26 @@ def run_agent_repl(
 
     def append_context(message: ChatMessage) -> None:
         context.append(message, debug=settings.debug)
+        try:
+            tool_calls_payload = None
+            if message.tool_calls:
+                tool_calls_payload = [
+                    {
+                        "name": tc.name,
+                        "arguments": dict(tc.arguments or {}),
+                        "call_id": tc.call_id,
+                    }
+                    for tc in message.tool_calls
+                ]
+            session_logger.log_chat_message(
+                role=message.role,
+                content=message.content,
+                tool_name=message.tool_name,
+                tool_call_id=message.tool_call_id,
+                tool_calls=tool_calls_payload,
+            )
+        except Exception:
+            return
 
     def _error_implies_missing_model(exc: Exception) -> bool:
         code = getattr(exc, "code", None)
@@ -229,15 +319,44 @@ def run_agent_repl(
         active_model = (models_by_provider.get(active_provider) or "").strip()
         if not active_model:
             active_model = (providers[active_provider].default_model or "").strip()
+        session_logger.log_event(
+            "llm_request",
+            {
+                "provider": active_provider,
+                "model": active_model,
+                "context_messages": len(context.messages),
+                "estimated_tokens": estimate_context_tokens(context.messages, model=active_model),
+                "tools": [t.get("function", {}).get("name") for t in (active_tools or []) if isinstance(t, dict)],
+            },
+        )
         try:
             return active_adapter.call_model(model=active_model, tools=active_tools, context=context, debug=settings.debug)
         except Exception as exc:
             if _error_implies_missing_model(exc):
                 fallback_model = (providers[active_provider].default_model or "").strip()
                 if fallback_model and fallback_model != active_model:
+                    chosen_provider = _prompt_select_provider(
+                        title=(
+                            f"Provider '{active_provider}' rejected model '{active_model}'.\n"
+                            f"Default for this provider is '{fallback_model}'."
+                        ),
+                        candidates=[active_provider, *list(providers.keys())],
+                        default_provider=active_provider,
+                    )
+
+                    if chosen_provider is None:
+                        raise RuntimeError("cancelled provider/model switch") from exc
+
+                    if chosen_provider != active_provider:
+                        _apply_active_provider(chosen_provider)
+                        _announce_active_provider_and_model("user selected after invalid model")
+                        raise RuntimeError(
+                            f"Switched provider to '{chosen_provider}'. Please retry your prompt."
+                        ) from exc
+
                     models_by_provider[active_provider] = fallback_model
                     os.environ[config.model_env] = fallback_model
-                    _announce_active_provider_and_model("auto-reset after invalid model")
+                    _announce_active_provider_and_model("user approved reset after invalid model")
                     raise RuntimeError(
                         f"provider '{active_provider}' rejected model '{active_model}'. "
                         f"Reset to default '{fallback_model}'. Please retry your prompt."
@@ -253,6 +372,14 @@ def run_agent_repl(
     def _announce_active_provider_and_model(reason: str) -> None:
         model = _active_model_for(active_provider)
         suffix = f" ({reason})" if reason else ""
+        session_logger.log_event(
+            "provider_active",
+            {
+                "provider": active_provider,
+                "model": model,
+                "reason": reason,
+            },
+        )
         append_context(
             ChatMessage(
                 role="system",
@@ -264,11 +391,25 @@ def run_agent_repl(
         )
 
     def parse_response(response: Any):
-        return active_adapter.parse_response(response, debug=settings.debug)
+        parsed = active_adapter.parse_response(response, debug=settings.debug)
+        try:
+            tool_names = [tc.name for tc in getattr(parsed, "tool_calls", []) or []]
+            session_logger.log_event(
+                "llm_parsed",
+                {
+                    "tool_calls": tool_names,
+                    "has_final_text": bool(getattr(parsed, "final_text", None)),
+                },
+            )
+        except Exception:
+            pass
+        return parsed
 
     def execute_tool_call(call: ToolCallInfo) -> Tuple[Sequence[ChatMessage], Optional[str]]:
         if settings.debug:
             print(f"[debug] executing tool: {call.name}")
+
+        session_logger.log_tool_call(name=call.name, arguments=dict(call.arguments or {}), call_id=call.call_id)
 
         if requires_confirmation(call.name):
             if not prompt_for_confirmation(call.name, call.arguments, state):
@@ -288,6 +429,8 @@ def run_agent_repl(
                 output_text = f"error: invalid arguments - {exc}"
             except Exception as exc:
                 output_text = f"error: {exc}"
+
+        session_logger.log_tool_result(name=call.name, call_id=call.call_id, output_text=output_text)
 
         return ([ChatMessage(role="tool", content=output_text, tool_name=call.name, tool_call_id=call.call_id)], None)
 
@@ -472,6 +615,15 @@ def run_agent_repl(
 
         local_result = _try_handle_local_command(line)
         if local_result is not None:
+            session_logger.log_event(
+                "local_command",
+                {
+                    "line": line,
+                    "result": local_result,
+                },
+            )
+            session_logger.log_transcript("user", line)
+            session_logger.log_transcript("assistant", local_result)
             return local_result
 
         if not config.catch_runtime_errors:
@@ -549,6 +701,7 @@ def run_agent_repl(
         if not fallbacks:
             return False
 
+        available: list[str] = []
         for candidate in fallbacks:
             candidate = (candidate or "").strip().lower()
             if not candidate or candidate == active_provider:
@@ -557,15 +710,45 @@ def run_agent_repl(
                 continue
             if _is_rate_limited(candidate):
                 continue
+            available.append(candidate)
 
-            _apply_active_provider(candidate)
-            _announce_active_provider_and_model(f"failover from rate-limited provider '{error.provider}'")
-            return True
+        if not available:
+            return False
+
+        chosen = _prompt_select_provider(
+            title=(
+                f"Provider '{error.provider}' is rate-limited.\n"
+                f"Pick a provider to continue (or cancel to stop and retry later)."
+            ),
+            candidates=[active_provider, *available],
+            default_provider=available[0],
+        )
+        if chosen is None:
+            return False
+        if chosen == active_provider:
+            return False
+
+        _apply_active_provider(chosen)
+        _announce_active_provider_and_model(f"user selected after rate-limit on '{error.provider}'")
+        return True
 
         return False
 
 
     def before_first_prompt() -> None:
+        session_logger.write_meta(
+            {
+                "started_at": time.time(),
+                "cwd": os.getcwd(),
+                "pid": os.getpid(),
+                "argv": list(sys.argv),
+                "initial_provider": initial_provider,
+                "initial_line": initial_line,
+                "env_provider": os.getenv("AI_PROVIDER"),
+                "env_model": os.getenv("AI_MODEL"),
+            }
+        )
+        session_logger.log_event("session_start", {"agent": config.agent_name})
         append_context(ChatMessage(role="system", content=config.internal_system_prompt))
         user_prompt = load_user_prompt(config.prompt_file_env, config.prompt_file_default, debug=settings.debug)
         if user_prompt:

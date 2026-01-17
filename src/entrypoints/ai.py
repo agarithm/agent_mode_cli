@@ -325,6 +325,14 @@ def main(argv: list[str] | None = None) -> int:
         catch_runtime_errors=True,
     )
 
+    initial_model_banner = (os.getenv("AI_MODEL") or "").strip()
+    if not initial_model_banner:
+        entry = providers.get(initial_provider)
+        initial_model_banner = (entry.default_model if entry else "") or "unknown"
+    print(
+        f"[ai] Provider: {initial_provider} {initial_model_banner}",
+    )
+
     try:
         return run_agent_repl(
             providers=providers,

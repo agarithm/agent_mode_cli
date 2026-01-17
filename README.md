@@ -116,6 +116,33 @@ ai copilot
 > :provider ollama
 ```
 
+## Session History (.sloppy)
+
+Each `ai` run automatically writes an **append-only** session log under `.sloppy/` in the current working directory:
+
+- `.sloppy/sessions/<session_id>/events.jsonl` – canonical event stream (DuckDB readable)
+- `.sloppy/sessions/<session_id>/transcript.md` – human-friendly transcript
+- `.sloppy/sessions/<session_id>/meta.json` – metadata (cwd, argv, provider/model, etc)
+
+DuckDB example:
+
+```sql
+SELECT ts, event, data
+FROM read_json_auto('.sloppy/sessions/*/events.jsonl')
+ORDER BY ts;
+```
+
+Environment knobs:
+
+- `AI_SLOPPY_LOG=0` disables logging
+- `AI_SLOPPY_DIR=/path/to/dir` overrides the default `.sloppy` location
+- `AI_SLOPPY_MAX_INLINE_CHARS=2000000` spills oversized message/tool outputs into `blobs/*.txt`
+- `AI_SLOPPY_GITIGNORE=0` disables auto-updating `.gitignore` to ignore `.sloppy/`
+
+Provider fallback behavior:
+
+- `AI_FALLBACK_PROMPT=0` disables interactive prompts and keeps automatic fallback (useful for non-interactive runs)
+
 ## Running From Source (dev)
 
 Use the dev wrapper script to run the tool directly from `src/` (no `dist/` build needed):
