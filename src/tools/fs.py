@@ -6,46 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from ._workspace import is_within_root, resolve_workspace_path, workspace_root
+
 
 _DEFAULT_MAX_LIST_ENTRIES = 2000
 _DEFAULT_MAX_READ_BYTES = 200_000
-
-
-def _workspace_root() -> Path:
-    # The agent is intended to operate on the current working directory.
-    return Path.cwd().resolve()
-
-
-def _is_within_root(candidate: Path, root: Path) -> bool:
-    try:
-        candidate.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-def _resolve_workspace_path(path: str, *, root: Optional[Path] = None) -> tuple[Optional[Path], Optional[str]]:
-    root = _workspace_root() if root is None else root.resolve()
-    raw = (path or "").strip()
-    if not raw:
-        return None, "error: path is required"
-
-    candidate = Path(raw)
-    if not candidate.is_absolute():
-        candidate = root / candidate
-
-    try:
-        resolved = candidate.resolve()
-    except FileNotFoundError:
-        # Resolve can fail on missing paths; still normalize as far as possible.
-        resolved = candidate.absolute()
-    except Exception as exc:
-        return None, f"error: could not resolve path - {exc}"
-
-    # Enforce workspace confinement.
-    if not _is_within_root(resolved, root):
-        return None, "error: path escapes workspace root"
-    return resolved, None
 
 
 def list_dir(
@@ -67,8 +32,8 @@ def list_dir(
     if max_depth < 0:
         return "error: max_depth must be >= 0"
 
-    root = _workspace_root()
-    base, err = _resolve_workspace_path(path, root=root)
+    root = workspace_root()
+    base, err = resolve_workspace_path(path, root=root)
     if err:
         return err
     assert base is not None
@@ -158,7 +123,7 @@ def list_dir(
                             resolved_child = entry.resolve()
                         except Exception:
                             continue
-                        if not _is_within_root(resolved_child, root):
+                        if not is_within_root(resolved_child, root):
                             continue
                         subdirs.append(entry)
 
@@ -195,8 +160,8 @@ def read_file(
     if length is not None and length <= 0:
         return "error: length must be > 0"
 
-    root = _workspace_root()
-    resolved, err = _resolve_workspace_path(path, root=root)
+    root = workspace_root()
+    resolved, err = resolve_workspace_path(path, root=root)
     if err:
         return err
     assert resolved is not None

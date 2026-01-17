@@ -5,32 +5,20 @@ import subprocess
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from ._workspace import resolve_workspace_paths, workspace_root
+
 
 _DEFAULT_MAX_CHARS = 40_000
 _DEFAULT_MAX_MATCHES = 200
 _DEFAULT_MAX_COLUMNS = 500
 
 
-def _workspace_root() -> Path:
-    return Path.cwd().resolve()
-
-
-def _resolve_paths(paths: Iterable[str]) -> List[Path]:
-    root = _workspace_root()
-    resolved: List[Path] = []
-
-    for raw in paths:
-        p = (raw or ".").strip() or "."
-        candidate = (root / p).resolve() if not os.path.isabs(p) else Path(p).resolve()
-
-        try:
-            candidate.relative_to(root)
-        except Exception:
-            raise ValueError(f"path escapes workspace root: {p}")
-
-        resolved.append(candidate)
-
-    return resolved or [root]
+def _resolve_paths(paths: Iterable[str]) -> tuple[Optional[List[Path]], Optional[str]]:
+    resolved, err = resolve_workspace_paths(paths, root=workspace_root())
+    if err:
+        return None, err
+    assert resolved is not None
+    return resolved, None
 
 
 def search_files(
@@ -68,10 +56,10 @@ def search_files(
         return "error: context_lines must be >= 0"
 
     raw_paths = paths if paths is not None else ["."]
-    try:
-        resolved_paths = _resolve_paths(raw_paths)
-    except ValueError as exc:
-        return f"error: {exc}"
+    resolved_paths, err = _resolve_paths(raw_paths)
+    if err:
+        return err
+    assert resolved_paths is not None
 
     cmd: List[str] = [
         "rg",
@@ -112,7 +100,7 @@ def search_files(
             cmd,
             text=True,
             capture_output=True,
-            cwd=str(_workspace_root()),
+            cwd=str(workspace_root()),
             timeout=20,
         )
     except FileNotFoundError:

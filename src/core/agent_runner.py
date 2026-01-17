@@ -183,7 +183,7 @@ def run_agent_repl(
             max_matches=max_matches,
             max_chars=max_chars,
         ),
-        "edit_file": lambda path, edits=None, mode=None, content=None, dry_run=False, make_backup=True: edit_file(
+        "edit_file": lambda path, *, mode, edits=None, content=None, dry_run=False, make_backup=True: edit_file(
             path,
             edits,
             mode=mode,

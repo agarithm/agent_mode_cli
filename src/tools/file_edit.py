@@ -2,50 +2,16 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Literal, Optional
 
 import difflib
+
+from ._workspace import resolve_workspace_path, workspace_root
 
 
 _DEFAULT_MAX_FILE_BYTES = 2_000_000
 _DEFAULT_MAX_DIFF_CHARS = 40_000
-
-
-def _workspace_root() -> Path:
-    # The agent is intended to operate on the current working directory.
-    return Path.cwd().resolve()
-
-
-def _is_within_root(candidate: Path, root: Path) -> bool:
-    try:
-        candidate.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-def _resolve_workspace_path(path: str, *, root: Optional[Path] = None) -> tuple[Optional[Path], Optional[str]]:
-    root = _workspace_root() if root is None else root.resolve()
-    raw = (path or "").strip()
-    if not raw:
-        return None, "error: path is required"
-
-    candidate = Path(raw)
-    if not candidate.is_absolute():
-        candidate = root / candidate
-
-    try:
-        resolved = candidate.resolve()
-    except FileNotFoundError:
-        resolved = candidate.absolute()
-    except Exception as exc:
-        return None, f"error: could not resolve path - {exc}"
-
-    if not _is_within_root(resolved, root):
-        return None, "error: path escapes workspace root"
-    return resolved, None
 
 
 def _read_text_file(path: Path, *, max_bytes: int = _DEFAULT_MAX_FILE_BYTES) -> tuple[str, Optional[str]]:
@@ -99,153 +65,141 @@ def _make_backup(path: Path) -> tuple[Optional[Path], Optional[str]]:
         return None, f"error: failed to create backup - {exc}"
 
 
-@dataclass(frozen=True)
-class EditOp:
-    op: str
-    old: Optional[str] = None
-    new: Optional[str] = None
-    before: Optional[str] = None
-    after: Optional[str] = None
-    content: Optional[str] = None
-    count: Optional[int] = None
-
-
-def _parse_ops(ops: Any) -> tuple[Optional[list[EditOp]], Optional[str]]:
-    if ops is None:
-        return None, "error: edits is required"
-    if not isinstance(ops, list):
+def _validate_ops(edits: Any) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
+    if edits is None:
+        return None, "error: edits is required when mode is 'edits'"
+    if not isinstance(edits, list):
         return None, "error: edits must be a list"
 
-    parsed: list[EditOp] = []
-    for idx, raw in enumerate(ops):
+    parsed: list[dict[str, Any]] = []
+    for idx, raw in enumerate(edits):
         if not isinstance(raw, dict):
             return None, f"error: edits[{idx}] must be an object"
         op = (raw.get("op") or "").strip().lower()
         if not op:
             return None, f"error: edits[{idx}].op is required"
-        parsed.append(
-            EditOp(
-                op=op,
-                old=raw.get("old"),
-                new=raw.get("new"),
-                before=raw.get("before"),
-                after=raw.get("after"),
-                content=raw.get("content"),
-                count=raw.get("count"),
-            )
-        )
+        normalized = dict(raw)
+        normalized["op"] = op
+        parsed.append(normalized)
+
     return parsed, None
 
 
-def _apply_op(text: str, op: EditOp) -> tuple[str, Optional[str]]:
-    count = op.count
+def _apply_op(text: str, op: dict[str, Any]) -> tuple[str, Optional[str]]:
+    count = op.get("count")
     if count is None:
         count = 1
     if not isinstance(count, int) or count < 0:
         return text, "error: count must be an integer >= 0"
 
-    if op.op == "replace":
-        if not isinstance(op.old, str) or not isinstance(op.new, str):
+    kind = (op.get("op") or "").strip().lower()
+
+    if kind == "replace":
+        old = op.get("old")
+        new = op.get("new")
+        if not isinstance(old, str) or not isinstance(new, str):
             return text, "error: replace requires 'old' and 'new'"
-        if op.old == "":
+        if old == "":
             return text, "error: replace 'old' must be non-empty"
-        occurrences = text.count(op.old)
+        occurrences = text.count(old)
         if occurrences == 0:
             return text, "error: replace target not found"
         if count == 0:
-            # replace all
-            return text.replace(op.old, op.new), None
+            return text.replace(old, new), None
         if occurrences < count:
             return text, f"error: replace expected at least {count} matches, found {occurrences}"
-        return text.replace(op.old, op.new, count), None
+        return text.replace(old, new, count), None
 
-    if op.op == "delete":
-        if not isinstance(op.old, str):
+    if kind == "delete":
+        old = op.get("old")
+        if not isinstance(old, str):
             return text, "error: delete requires 'old'"
-        if op.old == "":
+        if old == "":
             return text, "error: delete 'old' must be non-empty"
-        occurrences = text.count(op.old)
+        occurrences = text.count(old)
         if occurrences == 0:
             return text, "error: delete target not found"
         if count == 0:
-            return text.replace(op.old, ""), None
+            return text.replace(old, ""), None
         if occurrences < count:
             return text, f"error: delete expected at least {count} matches, found {occurrences}"
-        return text.replace(op.old, "", count), None
+        return text.replace(old, "", count), None
 
-    if op.op == "insert_before":
-        if not isinstance(op.before, str) or not isinstance(op.content, str):
+    if kind == "insert_before":
+        before = op.get("before")
+        content = op.get("content")
+        if not isinstance(before, str) or not isinstance(content, str):
             return text, "error: insert_before requires 'before' and 'content'"
-        if op.before == "":
+        if before == "":
             return text, "error: insert_before 'before' must be non-empty"
-        occurrences = text.count(op.before)
+        occurrences = text.count(before)
         if occurrences == 0:
             return text, "error: insert_before marker not found"
         if count == 0:
-            return text.replace(op.before, op.content + op.before), None
+            return text.replace(before, content + before), None
         if occurrences < count:
             return text, f"error: insert_before expected at least {count} matches, found {occurrences}"
         out = text
         for _ in range(count):
-            pos = out.find(op.before)
+            pos = out.find(before)
             if pos < 0:
                 break
-            out = out[:pos] + op.content + out[pos:]
+            out = out[:pos] + content + out[pos:]
         return out, None
 
-    if op.op == "insert_after":
-        if not isinstance(op.after, str) or not isinstance(op.content, str):
+    if kind == "insert_after":
+        after = op.get("after")
+        content = op.get("content")
+        if not isinstance(after, str) or not isinstance(content, str):
             return text, "error: insert_after requires 'after' and 'content'"
-        if op.after == "":
+        if after == "":
             return text, "error: insert_after 'after' must be non-empty"
-        occurrences = text.count(op.after)
+        occurrences = text.count(after)
         if occurrences == 0:
             return text, "error: insert_after marker not found"
         if count == 0:
-            return text.replace(op.after, op.after + op.content), None
+            return text.replace(after, after + content), None
         if occurrences < count:
             return text, f"error: insert_after expected at least {count} matches, found {occurrences}"
         out = text
         start = 0
         applied = 0
         while applied < count:
-            pos = out.find(op.after, start)
+            pos = out.find(after, start)
             if pos < 0:
                 break
-            insert_at = pos + len(op.after)
-            out = out[:insert_at] + op.content + out[insert_at:]
-            start = insert_at + len(op.content)
+            insert_at = pos + len(after)
+            out = out[:insert_at] + content + out[insert_at:]
+            start = insert_at + len(content)
             applied += 1
         return out, None
 
-    return text, f"error: unknown edit op '{op.op}'"
+    return text, f"error: unknown edit op '{kind}'"
 
 
 def edit_file(
     path: str,
     edits: Any = None,
     *,
-    mode: Optional[str] = None,
+    mode: Literal["overwrite", "append", "edits"],
     content: Optional[str] = None,
     dry_run: bool = False,
     make_backup: bool = True,
 ) -> str:
     """Edit a file within the current working directory.
 
-    Two modes are supported:
-    1) Whole-file writes:
-       - mode='overwrite' with content=str
-       - mode='append' with content=str
-
-    2) Structured edits via `edits` list. Supported ops:
-       - replace: {op:'replace', old:str, new:str, count:int? (0 = all)}
-       - delete: {op:'delete', old:str, count:int? (0 = all)}
-       - insert_before: {op:'insert_before', before:str, content:str, count:int? (0 = all)}
-       - insert_after: {op:'insert_after', after:str, content:str, count:int? (0 = all)}
+    Choose a mode to control how the file is modified:
+    - mode='overwrite' with content=str
+    - mode='append' with content=str
+    - mode='edits' with a non-empty `edits` list. Supported ops:
+      * replace: {op:'replace', old:str, new:str, count:int? (0 = all)}
+      * delete: {op:'delete', old:str, count:int? (0 = all)}
+      * insert_before: {op:'insert_before', before:str, content:str, count:int? (0 = all)}
+      * insert_after: {op:'insert_after', after:str, content:str, count:int? (0 = all)}
     """
 
-    root = _workspace_root()
-    resolved, err = _resolve_workspace_path(path, root=root)
+    root = workspace_root()
+    resolved, err = resolve_workspace_path(path, root=root)
     if err:
         return err
     assert resolved is not None
@@ -253,25 +207,21 @@ def edit_file(
     if resolved.exists() and resolved.is_dir():
         return f"error: path is a directory: {path}"
 
-    ops, err = _parse_ops(edits)
-    if err:
-        return err
-    assert ops is not None
-
     old_text, err = _read_text_file(resolved)
     if err:
         return err
 
     normalized_mode = (mode or "").strip().lower()
-    if normalized_mode:
-        if normalized_mode not in {"overwrite", "append"}:
-            return "error: mode must be one of: overwrite, append"
+    if normalized_mode not in {"overwrite", "append", "edits"}:
+        return "error: mode must be one of: overwrite, append, edits"
+
+    if normalized_mode in {"overwrite", "append"}:
         if not isinstance(content, str):
-            return "error: content is required when mode is set"
+            return "error: content is required when mode is 'overwrite' or 'append'"
         new_text = content if normalized_mode == "overwrite" else old_text + content
         edit_summary = f"mode: {normalized_mode}"
     else:
-        ops, err = _parse_ops(edits)
+        ops, err = _validate_ops(edits)
         if err:
             return err
         assert ops is not None
@@ -281,7 +231,7 @@ def edit_file(
             new_text, op_err = _apply_op(new_text, op)
             if op_err:
                 return f"error: edit[{idx}] {op_err}"
-        edit_summary = f"edits: {len(ops)}"
+        edit_summary = f"mode: edits ({len(ops)} operations)"
 
     diff = _unified_diff(old_text, new_text, from_name=f"a/{path}", to_name=f"b/{path}")
     diff, was_truncated = _truncate(diff)
