@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -18,6 +19,20 @@ from core.prompt_file import load_user_prompt
 from core.repl import run_repl
 from core.universal_context import ChatMessage, UniversalContext
 from core.token_usage import estimate_context_tokens, get_model_context_limit
+from core.git_repo import get_git_branch
+from core.git_repo import (
+    AutoBranchResult,
+    count_commits_ahead,
+    git_add_all,
+    git_checkout,
+    git_delete_branch,
+    git_merge,
+    has_uncommitted_changes,
+    is_repo_root,
+    maybe_auto_branch_for_container,
+    git_stash_pop,
+    git_stash_push,
+)
 from providers.base import ProviderAdapter, ProviderRateLimitError
 from core.runtime_settings import RuntimeSettings
 from core.session_log import SessionLogger
@@ -74,6 +89,16 @@ def run_agent_repl(
     if provider_key not in providers:
         available = ", ".join(sorted(providers.keys()))
         raise ValueError(f"unknown provider '{provider_key}'. Available: {available}")
+
+    cwd = os.getcwd()
+    auto_branch: Optional[AutoBranchResult] = None
+    if cwd and is_repo_root(cwd=cwd):
+        # Applies both inside container and when running from source (./test).
+        auto_branch = maybe_auto_branch_for_container(cwd=cwd)
+        os.environ.setdefault("AI_CONTAINER_AUTO_BRANCH_DONE", "1")
+        if auto_branch is not None and auto_branch.created and auto_branch.branch:
+            prev = auto_branch.previous_branch or "(unknown)"
+            print(f"[ai] auto-branch: {prev} -> {auto_branch.branch}", file=sys.stderr)
 
     settings = RuntimeSettings(
         debug=bool(config.initial_debug),
@@ -755,18 +780,133 @@ def run_agent_repl(
             append_context(ChatMessage(role="system", content=user_prompt))
         _announce_active_provider_and_model("session start")
 
+    git_branch: Optional[str] = get_git_branch(cwd=os.getcwd())
+
+    def _after_each_prompt() -> None:
+        nonlocal git_branch
+        state.reset_after_prompt()
+        git_branch = get_git_branch(cwd=os.getcwd())
+
     def _prompt_string() -> str:
         model = _active_model_for(active_provider)
         label = model or active_provider or "agent"
         used_tokens = estimate_context_tokens(context.messages, model=model)
         limit = get_model_context_limit(model)
         limit_text = str(limit) if limit is not None else "?"
-        return f"[{label}] [{used_tokens}:{limit_text}] > "
+        branch_text = f" git:{git_branch}" if git_branch else ""
+        return f"[{label}{branch_text}] [{used_tokens}:{limit_text}] > "
 
-    return run_repl(
+    def _prompt_exit_git_flow() -> None:
+        if auto_branch is None or not auto_branch.branch or not auto_branch.previous_branch:
+            return
+
+        # Only manage cleanup when we actually know what the original branch is.
+        if auto_branch.previous_branch == auto_branch.branch:
+            return
+
+        cwd_now = os.getcwd()
+        current = get_git_branch(cwd=cwd_now)
+        if current != auto_branch.branch:
+            return
+
+        is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+
+        def _try_return_to_original() -> bool:
+            # Carry any local changes back to the original branch.
+            ok, out = git_checkout(auto_branch.previous_branch, cwd=cwd_now, merge=True)
+            if not ok:
+                print(f"[ai] could not return to original branch '{auto_branch.previous_branch}': {out}", file=sys.stderr)
+                return False
+            return True
+
+        ahead = count_commits_ahead(base=auto_branch.previous_branch, head=auto_branch.branch, cwd=cwd_now)
+        dirty = has_uncommitted_changes(cwd=cwd_now)
+
+        # If nothing changed, just return and clean up the temp branch.
+        if not dirty and (ahead is None or ahead == 0):
+            if _try_return_to_original():
+                git_delete_branch(auto_branch.branch, cwd=cwd_now, force=False)
+            return
+
+        # If we can't prompt, do the safest cleanup we can: return to the original
+        # branch (carrying local changes) and leave commits on the sloppy branch.
+        if not is_tty:
+            _try_return_to_original()
+            return
+
+        # If there are commits on the sloppy branch, offer merge-back. We no longer
+        # prompt about uncommitted changes; those will be carried back as local changes.
+        if ahead is not None and ahead > 0:
+            print(
+                "\n[ai] git exit options:\n"
+                f"  original: {auto_branch.previous_branch}\n"
+                f"  sloppy:   {auto_branch.branch}\n"
+                f"  commits ahead: {ahead}\n"
+                f"  uncommitted changes: {'yes' if dirty else 'no'}\n",
+                file=sys.stderr,
+            )
+            print(
+                "Choose:\n"
+                "  [m] merge commits back into original\n"
+                "  [s] skip (leave commits on sloppy branch)\n",
+                file=sys.stderr,
+            )
+            try:
+                choice = input("Action [m/s]: ").strip().lower()
+            except Exception:
+                _try_return_to_original()
+                return
+
+            if choice == "m":
+                # To merge commits, we need a clean working tree. If we have local changes,
+                # stash them temporarily and restore them after merge.
+                did_stash = False
+                if has_uncommitted_changes(cwd=cwd_now):
+                    ok, out = git_stash_push(cwd=cwd_now, message="ai exit stash")
+                    if not ok:
+                        print(f"[ai] git stash failed: {out}", file=sys.stderr)
+                        return
+                    did_stash = True
+
+                ok, out = git_checkout(auto_branch.previous_branch, cwd=cwd_now, merge=False)
+                if not ok:
+                    print(f"[ai] git checkout failed: {out}", file=sys.stderr)
+                    return
+
+                ok, out = git_merge(auto_branch.branch, cwd=cwd_now)
+                if not ok:
+                    print("[ai] git merge failed; resolve conflicts manually.", file=sys.stderr)
+                    if out:
+                        print(out, file=sys.stderr)
+                    return
+
+                git_delete_branch(auto_branch.branch, cwd=cwd_now, force=False)
+
+                if did_stash:
+                    ok, out = git_stash_pop(cwd=cwd_now)
+                    if not ok:
+                        print("[ai] git stash pop failed; your changes are still stashed.", file=sys.stderr)
+                        if out:
+                            print(out, file=sys.stderr)
+                return
+
+            # Skip: return to original carrying local changes.
+            _try_return_to_original()
+            return
+
+        # No commits to merge: just return to original carrying local changes.
+        _try_return_to_original()
+        # If the temp branch has no commits, it's safe to delete even if it had local changes.
+        if ahead is not None and ahead == 0:
+            git_delete_branch(auto_branch.branch, cwd=cwd_now, force=False)
+
+    exit_code = run_repl(
         initial_line=initial_line,
         before_first_prompt=before_first_prompt,
         process_line=process,
-        after_each_prompt=state.reset_after_prompt,
+        after_each_prompt=_after_each_prompt,
         prompt_provider=_prompt_string,
     )
+
+    _prompt_exit_git_flow()
+    return exit_code
