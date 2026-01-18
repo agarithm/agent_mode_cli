@@ -124,6 +124,32 @@ def main(argv: list[str] | None = None) -> int:
     _maybe_run_inside_container(argv)
     from version import __version__
 
+    def _extract_ui_flag(args: list[str]) -> tuple[str | None, list[str]]:
+        ui_value: str | None = None
+        remaining: list[str] = []
+        i = 0
+        while i < len(args):
+            token = args[i]
+            if token == "--tui":
+                ui_value = "textual"
+                i += 1
+                continue
+            if token == "--ui" and i + 1 < len(args):
+                ui_value = (args[i + 1] or "").strip()
+                i += 2
+                continue
+            if token.startswith("--ui="):
+                ui_value = token.split("=", 1)[1].strip()
+                i += 1
+                continue
+            remaining.append(token)
+            i += 1
+        return ui_value, remaining
+
+    ui_flag, argv = _extract_ui_flag(argv)
+    ui_env = (os.getenv("AI_UI") or "").strip()
+    ui = (ui_flag or ui_env or "plain").strip().lower()
+
     debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
     env_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
     base_ollama_model = os.getenv("AI_MODEL", "gpt-oss:latest")
@@ -138,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         env_lines=(
             "AI_PROVIDER     optional (default: ollama)",
             "AI_MODEL        optional (default: qwen2.5-coder:32b; applies to current provider)",
+            "AI_UI           optional (plain|textual; or use --ui textual)",
             "AI_DEBUG        optional (1/true enables debug)",
             "AI_PROMPT_FILE  optional (default: ~/.ai_prompt)",
             "OPENAI_API_KEY  required for OpenAI provider",
@@ -339,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
             initial_provider=initial_provider,
             config=runner_config,
             initial_line=initial_line,
+            ui=ui,
         )
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

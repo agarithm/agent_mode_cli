@@ -5,9 +5,33 @@ from typing import Callable, Optional
 try:
     from rich.console import Console
     from rich.markdown import Markdown
+    from rich.text import Text
 except Exception:
     Console = None  # type: ignore
     Markdown = None  # type: ignore
+    Text = None  # type: ignore
+
+
+def is_exit_command(line: str) -> bool:
+    return (line or "").strip().lower() in ("exit", "quit", "q")
+
+
+def renderables_for_result(result: str):
+    """Return a list of Rich renderables/strings for a REPL result."""
+
+    text = (result or "").rstrip()
+    if Text is None:
+        separator = ">>>>>>>>>"
+    else:
+        separator = Text(">>>>>>>>>", style="bold cyan")
+
+    if Markdown is None:
+        return [separator, text, ""]
+
+    try:
+        return [separator, Markdown(text or ""), ""]
+    except Exception:
+        return [separator, text, ""]
 
 
 def run_repl(
@@ -30,19 +54,13 @@ def run_repl(
         return f"{value}"
 
     def _render_result(result: str) -> None:
-        text = (result or "").rstrip()
-        if console is None or Markdown is None:
-            print(f">>>>>>>>>\n{text}\n")
+        parts = list(renderables_for_result(result))
+        if console is None:
+            for part in parts:
+                print(str(part))
             return
-
-        console.print(">>>>>>>>>", style="bold cyan", markup=False)
-        try:
-            markdown = Markdown(text or "")
-            console.print(markdown)
-        except Exception:
-            console.print(text)
-        finally:
-            console.print()
+        for part in parts:
+            console.print(part)
 
     try:
         before_first_prompt()
@@ -63,7 +81,7 @@ def run_repl(
                 line = input()
             if not line.strip():
                 continue
-            if line.strip().lower() in ("exit", "quit", "q"):
+            if is_exit_command(line):
                 print("Exiting.")
                 break
             try:

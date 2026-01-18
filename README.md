@@ -150,6 +150,16 @@ Use the dev wrapper script to run the tool directly from `src/` (no `dist/` buil
 ```bash
 ./test
 ./test openai gpt-4.1
+./test --ui textual
+
+### UI Mode
+
+The default REPL is a plain stdin/stdout loop. You can enable the experimental tiled UI (Textual) via:
+
+- Flag: `--ui textual` (or `--tui`)
+- Env: `AI_UI=textual`
+
+The Textual UI shows the main transcript + input on the left, and a live **Context Monitor** pane on the right.
 ```
 ## Ollama Setup
 To use the Ollama provider, you need to have the Ollama CLI installed and a local Ollama model running.

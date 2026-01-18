@@ -74,6 +74,7 @@ def run_agent_repl(
     initial_provider: str,
     config: AgentRunnerConfig,
     initial_line: Optional[str],
+    ui: str = "plain",
 ) -> int:
     """Run a REPL that can switch providers mid-session.
 
@@ -655,6 +656,7 @@ def run_agent_repl(
             return process_line_with_tools(
                 line,
                 debug=settings.debug,
+                show_progress=(ui != "textual"),
                 append_context=append_context,
                 call_model=call_model,
                 parse_response=parse_response,
@@ -677,6 +679,7 @@ def run_agent_repl(
                 return process_line_with_tools(
                     line,
                     debug=settings.debug,
+                    show_progress=(ui != "textual"),
                     append_context=append_context_maybe_suppress,
                     call_model=call_model,
                     parse_response=parse_response,
@@ -900,13 +903,57 @@ def run_agent_repl(
         if ahead is not None and ahead == 0:
             git_delete_branch(auto_branch.branch, cwd=cwd_now, force=False)
 
-    exit_code = run_repl(
-        initial_line=initial_line,
-        before_first_prompt=before_first_prompt,
-        process_line=process,
-        after_each_prompt=_after_each_prompt,
-        prompt_provider=_prompt_string,
-    )
+    ui_key = (ui or "plain").strip().lower()
+    if ui_key in {"textual", "tui"}:
+        try:
+            from core.textual_ui import run_textual_repl  # lazy import
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Textual UI requested but the 'textual' package is not available. "
+                "Install requirements or run inside the dev container."
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(f"Textual UI requested but failed to initialize: {exc}") from exc
+
+        def _context_version() -> int:
+            try:
+                return len(context.messages)
+            except Exception:
+                return 0
+
+        def _context_snapshot() -> str:
+            lines: list[str] = []
+            for i, msg in enumerate(context.messages, 1):
+                role = (msg.role or "").strip() or "?"
+                content = (msg.content or "").rstrip()
+                if len(content) > 4000:
+                    content = content[:4000].rstrip() + "\n… (truncated)"
+                header = f"{i:03d} {role}"
+                if msg.tool_name:
+                    header += f" tool={msg.tool_name}"
+                lines.append(header)
+                if content:
+                    lines.append(content)
+                lines.append("")
+            return "\n".join(lines).rstrip() + "\n"
+
+        exit_code = run_textual_repl(
+            initial_line=initial_line,
+            before_first_prompt=before_first_prompt,
+            process_line=process,
+            after_each_prompt=_after_each_prompt,
+            prompt_provider=_prompt_string,
+            context_version=_context_version,
+            context_snapshot=_context_snapshot,
+        )
+    else:
+        exit_code = run_repl(
+            initial_line=initial_line,
+            before_first_prompt=before_first_prompt,
+            process_line=process,
+            after_each_prompt=_after_each_prompt,
+            prompt_provider=_prompt_string,
+        )
 
     _prompt_exit_git_flow()
     return exit_code

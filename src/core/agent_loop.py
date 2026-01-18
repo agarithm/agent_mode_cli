@@ -37,6 +37,7 @@ def process_line_with_tools(
     line: str,
     *,
     debug: bool,
+    show_progress: bool = True,
     append_context: Callable[[ChatMessage], None],
     call_model: Callable[[], Any],
     parse_response: Callable[[Any], ParseResult],
@@ -76,7 +77,7 @@ def process_line_with_tools(
                 append_context(ChatMessage(role="assistant", content=error_text))
                 return error_text
 
-        if not debug:
+        if show_progress and not debug:
             print(".", end="", flush=True)
             printed_progress = True
 
