@@ -937,6 +937,32 @@ def run_agent_repl(
                 lines.append("")
             return "\n".join(lines).rstrip() + "\n"
 
+        def _context_delta(since_version: int) -> str:
+            """Format and return only new context entries appended since `since_version`.
+
+            since_version is expected to be the previous len(context.messages).
+            """
+
+            start = max(int(since_version), 0)
+            msgs = context.messages
+            if start >= len(msgs):
+                return ""
+
+            lines: list[str] = []
+            for i, msg in enumerate(msgs[start:], start + 1):
+                role = (msg.role or "").strip() or "?"
+                content = (msg.content or "").rstrip()
+                if len(content) > 4000:
+                    content = content[:4000].rstrip() + "\n… (truncated)"
+                header = f"{i:03d} {role}"
+                if msg.tool_name:
+                    header += f" tool={msg.tool_name}"
+                lines.append(header)
+                if content:
+                    lines.append(content)
+                lines.append("")
+            return "\n".join(lines).rstrip() + "\n"
+
         exit_code = run_textual_repl(
             initial_line=initial_line,
             before_first_prompt=before_first_prompt,
@@ -945,6 +971,7 @@ def run_agent_repl(
             prompt_provider=_prompt_string,
             context_version=_context_version,
             context_snapshot=_context_snapshot,
+            context_delta=_context_delta,
         )
     else:
         exit_code = run_repl(
