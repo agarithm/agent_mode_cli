@@ -22,6 +22,7 @@ def run_textual_repl(
     context_version: Optional[Callable[[], int]] = None,
     context_snapshot: Optional[Callable[[], str]] = None,
     context_delta: Optional[Callable[[int], str]] = None,
+    on_app_ready: Optional[Callable[[object], None]] = None,
     config: TextualReplConfig | None = None,
 ) -> int:
     """Run a full-screen Textual REPL.
@@ -69,6 +70,7 @@ def run_textual_repl(
             self._copy_mode: bool = False
             self._raw_transcript_lines: list[str] = []
             self._context_follow: bool = True
+            self._busy: bool = False
 
         def _update_context_follow(self) -> None:
             try:
@@ -238,7 +240,10 @@ def run_textual_repl(
                     label = prompt_provider() or "> "
                 except Exception:
                     label = "> "
-            self.query_one("#prompt_line", Static).update(label)
+            try:
+                self.query_one("#prompt_line", Static).update(label)
+            except Exception:
+                return
 
         def _refresh_context(self) -> None:
             if context_version is None or context_snapshot is None:
@@ -291,6 +296,59 @@ def run_textual_repl(
                     except Exception:
                         self._safe_scroll_context_end()
 
+        async def _run_command(self, line: str) -> None:
+            """Run `process_line` without blocking the message pump."""
+
+            try:
+                transcript = self.query_one("#transcript_rich", RichLog)
+                command_input = self.query_one("#command", Input)
+            except Exception:
+                return
+
+            if self._busy:
+                return
+            self._busy = True
+            command_input.disabled = True
+
+            try:
+                # Ensure the initial session prompt/context is added before first command.
+                if not self._did_init_session:
+                    try:
+                        before_first_prompt()
+                    finally:
+                        self._did_init_session = True
+                        self._refresh_context()
+                        self._update_prompt()
+
+                result = await asyncio.to_thread(process_line, line)
+                for part in renderables_for_result(result):
+                    transcript.write(part)
+
+                self._append_transcript_raw(">>>>>>>>>")
+                result_text = (result or "").rstrip()
+                if result_text:
+                    for out_line in result_text.splitlines():
+                        self._append_transcript_raw(out_line)
+                self._append_transcript_raw("")
+            finally:
+                try:
+                    after_each_prompt()
+                finally:
+                    self._busy = False
+                    try:
+                        command_input.disabled = False
+                        command_input.focus()
+                    except Exception:
+                        pass
+                    try:
+                        self._refresh_context()
+                    except Exception:
+                        pass
+                    try:
+                        self._update_prompt()
+                    except Exception:
+                        pass
+
         async def on_input_submitted(self, event: Input.Submitted) -> None:
             line = (event.value or "").strip()
             event.input.value = ""
@@ -307,42 +365,23 @@ def run_textual_repl(
                 self.exit(0)
                 return
 
-            # Ensure the initial session prompt/context is added before first command.
-            # We do this lazily so the UI can mount first.
-            if not self._did_init_session:
-                try:
-                    before_first_prompt()
-                finally:
-                    self._did_init_session = True
-                    self._refresh_context()
-                    self._update_prompt()
-
-            event.input.disabled = True
+            # Kick off processing as a background task so the UI keeps handling
+            # key/mouse events (critical for modals like confirmations).
             try:
-                result = await asyncio.to_thread(process_line, line)
-            finally:
-                try:
-                    after_each_prompt()
-                finally:
-                    event.input.disabled = False
-                    event.input.focus()
-                    self._refresh_context()
-                    self._update_prompt()
-
-            (result or "")
-            for part in renderables_for_result(result):
-                transcript.write(part)
-
-            self._append_transcript_raw(">>>>>>>>>")
-            result_text = (result or "").rstrip()
-            if result_text:
-                for out_line in result_text.splitlines():
-                    self._append_transcript_raw(out_line)
-            self._append_transcript_raw("")
+                asyncio.create_task(self._run_command(line))
+            except Exception:
+                # Fallback: if task creation fails, do the old behavior.
+                await self._run_command(line)
 
     # If an initial line exists, we run it by seeding the input after mount.
     # This is implemented as a best-effort QoL feature.
     app = AgentTui()
+
+    if on_app_ready is not None:
+        try:
+            on_app_ready(app)
+        except Exception:
+            pass
 
     if initial_line is not None and initial_line.strip():
         seed = initial_line.strip()
@@ -351,7 +390,8 @@ def run_textual_repl(
             await asyncio.sleep(0)
             app._refresh_context()  # type: ignore[attr-defined]
             app._update_prompt()  # type: ignore[attr-defined]
-            # Run the initial command as a background task.
+            # Show the initial command in the transcript and then run it without
+            # blocking the UI event loop (so modals remain interactive).
             transcript = app.query_one("#transcript_rich", RichLog)
             transcript.write(f"> {seed}")
 
@@ -369,20 +409,18 @@ def run_textual_repl(
                 app.exit(0)
                 return
 
-            result = await asyncio.to_thread(process_line, seed)
-            after_each_prompt()
-            app._refresh_context()  # type: ignore[attr-defined]
-            app._update_prompt()  # type: ignore[attr-defined]
-            for part in renderables_for_result(result):
-                transcript.write(part)
-
             try:
-                app._append_transcript_raw(">>>>>>>>>")  # type: ignore[attr-defined]
-                result_text = (result or "").rstrip()
-                if result_text:
-                    for out_line in result_text.splitlines():
-                        app._append_transcript_raw(out_line)  # type: ignore[attr-defined]
-                app._append_transcript_raw("")  # type: ignore[attr-defined]
+                runner = getattr(app, "_run_command", None)
+                if runner is not None:
+                    asyncio.create_task(runner(seed))
+                    return
+            except Exception:
+                pass
+
+            # Fallback: if we can't access the runner, run the command directly.
+            # (May block in older Textual versions.)
+            try:
+                asyncio.create_task(asyncio.to_thread(process_line, seed))
             except Exception:
                 pass
 

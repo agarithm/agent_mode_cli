@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from core.agent_loop import ToolCallInfo, process_line_with_tools
 from core.confirm import ConfirmState, prompt_for_confirmation, requires_confirmation
+from core.prompting import clear_prompt_backend, select_one, set_prompt_backend
 from tools import bash_command
 from tools import edit_file
 from tools import http_fetch
@@ -86,6 +87,8 @@ def run_agent_repl(
     if not providers:
         raise ValueError("providers mapping is required")
 
+    ui_key = (ui or "plain").strip().lower()
+
     provider_key = (initial_provider or "").strip().lower()
     if provider_key not in providers:
         available = ", ".join(sorted(providers.keys()))
@@ -128,6 +131,9 @@ def run_agent_repl(
     context = UniversalContext()
     state = ConfirmState(approve_all=False, debug=settings.debug)
 
+    confirm_bridge = None
+    tui_approve_all: bool = False
+
     adapter_cache: Dict[str, ProviderAdapter] = {}
 
     active_provider = provider_key
@@ -155,6 +161,17 @@ def run_agent_repl(
         default_provider: str,
     ) -> Optional[str]:
         """Prompt user to pick a provider; returns provider name or None to cancel."""
+
+        # In TUI mode, prefer the Textual prompt backend instead of stdin.
+        if ui_key in {"textual", "tui"}:
+            chosen = select_one(
+                title=title,
+                options=cleaned,
+                default=default_provider,
+                allow_cancel=True,
+            )
+            if chosen is not None:
+                return chosen
 
         if not _fallback_prompt_enabled():
             return default_provider
@@ -432,13 +449,36 @@ def run_agent_repl(
         return parsed
 
     def execute_tool_call(call: ToolCallInfo) -> Tuple[Sequence[ChatMessage], Optional[str]]:
+        nonlocal tui_approve_all
         if settings.debug:
             print(f"[debug] executing tool: {call.name}")
 
         session_logger.log_tool_call(name=call.name, arguments=dict(call.arguments or {}), call_id=call.call_id)
 
         if requires_confirmation(call.name):
-            if not prompt_for_confirmation(call.name, call.arguments, state):
+            if ui_key in {"textual", "tui"} and confirm_bridge is not None:
+                if tui_approve_all:
+                    ok = True
+                else:
+                    decision = confirm_bridge.confirm(
+                        tool_name=call.name,
+                        arguments=call.arguments,
+                        approve_all=(state.approve_all or tui_approve_all),
+                        debug=settings.debug,
+                    )
+                    if decision == "all":
+                        tui_approve_all = True
+                        try:
+                            state.enable_approve_all()
+                        except Exception:
+                            pass
+                        ok = True
+                    else:
+                        ok = decision == "yes"
+            else:
+                ok = prompt_for_confirmation(call.name, call.arguments, state)
+
+            if not ok:
                 cancel_message = f"Tool '{call.name}' execution cancelled by user."
                 return (
                     [ChatMessage(role="tool", content="cancelled by user", tool_name=call.name, tool_call_id=call.call_id)],
@@ -656,7 +696,7 @@ def run_agent_repl(
             return process_line_with_tools(
                 line,
                 debug=settings.debug,
-                show_progress=(ui != "textual"),
+                show_progress=(ui_key not in {"textual", "tui"}),
                 append_context=append_context,
                 call_model=call_model,
                 parse_response=parse_response,
@@ -679,7 +719,7 @@ def run_agent_repl(
                 return process_line_with_tools(
                     line,
                     debug=settings.debug,
-                    show_progress=(ui != "textual"),
+                    show_progress=(ui_key not in {"textual", "tui"}),
                     append_context=append_context_maybe_suppress,
                     call_model=call_model,
                     parse_response=parse_response,
@@ -903,10 +943,10 @@ def run_agent_repl(
         if ahead is not None and ahead == 0:
             git_delete_branch(auto_branch.branch, cwd=cwd_now, force=False)
 
-    ui_key = (ui or "plain").strip().lower()
     if ui_key in {"textual", "tui"}:
         try:
             from core.textual_ui import run_textual_repl  # lazy import
+            from core.textual_confirm import TextualPromptBridge
         except ModuleNotFoundError as exc:
             raise RuntimeError(
                 "Textual UI requested but the 'textual' package is not available. "
@@ -914,6 +954,8 @@ def run_agent_repl(
             ) from exc
         except Exception as exc:
             raise RuntimeError(f"Textual UI requested but failed to initialize: {exc}") from exc
+
+        confirm_bridge = TextualPromptBridge()
 
         def _context_version() -> int:
             try:
@@ -972,6 +1014,7 @@ def run_agent_repl(
             context_version=_context_version,
             context_snapshot=_context_snapshot,
             context_delta=_context_delta,
+            on_app_ready=lambda app: (confirm_bridge.attach_app(app), set_prompt_backend(confirm_bridge)),
         )
     else:
         exit_code = run_repl(
@@ -983,4 +1026,8 @@ def run_agent_repl(
         )
 
     _prompt_exit_git_flow()
+    try:
+        clear_prompt_backend()
+    except Exception:
+        pass
     return exit_code

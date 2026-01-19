@@ -6,6 +6,8 @@ from typing import Sequence
 
 import ollama
 
+from core.prompting import has_prompt_backend, select_one
+
 from providers.ollama.adapter import OllamaProviderAdapter
 from providers.ollama.runtime import prepare_runtime
 
@@ -42,6 +44,11 @@ def _prompt_for_installed_model(installed: Sequence[str]) -> str | None:
     if not installed:
         print("No local Ollama models found.")
         return None
+
+    # Prefer the UI prompt backend (Textual) when available.
+    if has_prompt_backend():
+        return select_one(title="Select an installed Ollama model", options=list(installed), allow_cancel=True)
+
     print("Installed Ollama models:")
     for idx, name in enumerate(installed, start=1):
         print(f"  {idx}. {name}")
@@ -67,7 +74,7 @@ def _resolve_missing_ollama_model(
     installed: Sequence[str],
     debug: bool,
 ) -> str:
-    if not sys.stdin.isatty():
+    if not sys.stdin.isatty() and not has_prompt_backend():
         raise RuntimeError(
             f"Ollama model '{missing_model}' is not installed. "
             f"Run 'ollama pull {missing_model}' or set AI_MODEL to a downloaded model."
@@ -75,7 +82,27 @@ def _resolve_missing_ollama_model(
 
     print(f"Ollama model '{missing_model}' is not installed locally.")
     while True:
-        choice = input("Pull it now? [P]ull / [S]elect installed model / [Q]uit: ").strip().lower()
+        if has_prompt_backend():
+            selected_action = select_one(
+                title=(
+                    f"Ollama model '{missing_model}' is not installed.\n"
+                    "Choose an action"
+                ),
+                options=["Pull", "Select installed", "Quit"],
+                default="Pull",
+                allow_cancel=True,
+            )
+            if selected_action is None:
+                raise RuntimeError("aborted: no Ollama model selected.")
+            if selected_action.lower().startswith("p"):
+                choice = "p"
+            elif selected_action.lower().startswith("s"):
+                choice = "s"
+            else:
+                choice = "q"
+        else:
+            choice = input("Pull it now? [P]ull / [S]elect installed model / [Q]uit: ").strip().lower()
+
         if choice in {"", "p", "pull", "y", "yes"}:
             _pull_ollama_model(adapter, missing_model)
             installed = adapter.list_models(debug=debug)
