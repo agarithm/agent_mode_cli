@@ -144,7 +144,7 @@ def raw_tool_specs(prefix: str) -> Sequence[Dict[str, Any]]:
                     },
                     "mode": {
                         "type": "string",
-                        "description": "Whole-file write mode: overwrite | append. When provided, 'content' is required and 'edits' is ignored.",
+                        "description": "Write mode: overwrite | append | edits. overwrite/append use 'content'; edits uses the 'edits' list.",
                     },
                     "content": {
                         "type": "string",

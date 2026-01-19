@@ -20,7 +20,7 @@ class ConfirmRequest:
 class TextualPromptBridge:
     """Thread-safe confirmation bridge for Textual.
 
-    The agent loop runs in a worker thread under `--tui` (via asyncio.to_thread).
+    The agent loop runs in a worker thread under the Textual UI (via asyncio.to_thread).
     This bridge lets that thread synchronously ask the user for permission by
     scheduling a modal screen on the Textual app thread.
     """

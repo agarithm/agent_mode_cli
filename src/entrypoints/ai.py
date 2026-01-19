@@ -12,6 +12,7 @@ if TYPE_CHECKING:  # pragma: no cover
 from core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl
 from core.cli_help import handle_common_flags
 from core.system_prompt import build_internal_system_prompt
+from core.ui_runners import run_fullscreen, run_inline
 from providers.ollama.adapter import OllamaProviderAdapter
 from providers.ollama.runtime import prepare_runtime
 from providers.ollama.tools import build_tools as build_ollama_tools
@@ -124,31 +125,21 @@ def main(argv: list[str] | None = None) -> int:
     _maybe_run_inside_container(argv)
     from version import __version__
 
-    def _extract_ui_flag(args: list[str]) -> tuple[str | None, list[str]]:
-        ui_value: str | None = None
+    def _extract_inline_flag(args: list[str]) -> tuple[bool, list[str]]:
+        inline = False
         remaining: list[str] = []
         i = 0
         while i < len(args):
             token = args[i]
-            if token == "--tui":
-                ui_value = "textual"
-                i += 1
-                continue
-            if token == "--ui" and i + 1 < len(args):
-                ui_value = (args[i + 1] or "").strip()
-                i += 2
-                continue
-            if token.startswith("--ui="):
-                ui_value = token.split("=", 1)[1].strip()
+            if token == "--inline":
+                inline = True
                 i += 1
                 continue
             remaining.append(token)
             i += 1
-        return ui_value, remaining
+        return inline, remaining
 
-    ui_flag, argv = _extract_ui_flag(argv)
-    ui_env = (os.getenv("AI_UI") or "").strip()
-    ui = (ui_flag or ui_env or "plain").strip().lower()
+    inline, argv = _extract_inline_flag(argv)
 
     debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
     env_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
@@ -156,15 +147,14 @@ def main(argv: list[str] | None = None) -> int:
 
     flag_exit = handle_common_flags(
         argv,
-        usage="ai [provider] [model] [prompt...]",
+        usage="ai [--inline] [provider] [model] [prompt...]",
         description=(
             "Agent-mode CLI (full REPL) with dynamic provider switching. "
             "Default provider is Ollama (local)."
         ),
         env_lines=(
             "AI_PROVIDER     optional (default: ollama)",
-            "AI_MODEL        optional (default: qwen2.5-coder:32b; applies to current provider)",
-            "AI_UI           optional (plain|textual; or use --ui textual)",
+            "AI_MODEL        optional (default: gpt-oss:latest; applies to current provider)",
             "AI_DEBUG        optional (1/true enables debug)",
             "AI_PROMPT_FILE  optional (default: ~/.ai_prompt)",
             "OPENAI_API_KEY  required for OpenAI provider",
@@ -361,12 +351,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
+        repl_runner = run_inline if inline else run_fullscreen
         return run_agent_repl(
             providers=providers,
             initial_provider=initial_provider,
             config=runner_config,
             initial_line=initial_line,
-            ui=ui,
+            repl_runner=repl_runner,
         )
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -9,7 +9,8 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from core.agent_loop import ToolCallInfo, process_line_with_tools
 from core.confirm import ConfirmState, prompt_for_confirmation, requires_confirmation
-from core.prompting import clear_prompt_backend, select_one, set_prompt_backend
+from core.prompting import clear_prompt_backend, confirm as ui_confirm, has_prompt_backend, select_one
+from core.repl_callbacks import ReplCallbacks
 from tools import bash_command
 from tools import edit_file
 from tools import http_fetch
@@ -17,7 +18,6 @@ from tools import list_dir, read_file
 from tools import python_exec
 from tools import search_files
 from core.prompt_file import load_user_prompt
-from core.repl import run_repl
 from core.universal_context import ChatMessage, UniversalContext
 from core.token_usage import estimate_context_tokens, get_model_context_limit
 from core.git_repo import get_git_branch
@@ -75,7 +75,7 @@ def run_agent_repl(
     initial_provider: str,
     config: AgentRunnerConfig,
     initial_line: Optional[str],
-    ui: str = "plain",
+    repl_runner: Callable[[ReplCallbacks], int],
 ) -> int:
     """Run a REPL that can switch providers mid-session.
 
@@ -86,9 +86,6 @@ def run_agent_repl(
 
     if not providers:
         raise ValueError("providers mapping is required")
-
-    ui_key = (ui or "plain").strip().lower()
-
     provider_key = (initial_provider or "").strip().lower()
     if provider_key not in providers:
         available = ", ".join(sorted(providers.keys()))
@@ -131,9 +128,6 @@ def run_agent_repl(
     context = UniversalContext()
     state = ConfirmState(approve_all=False, debug=settings.debug)
 
-    confirm_bridge = None
-    tui_approve_all: bool = False
-
     adapter_cache: Dict[str, ProviderAdapter] = {}
 
     active_provider = provider_key
@@ -162,26 +156,24 @@ def run_agent_repl(
     ) -> Optional[str]:
         """Prompt user to pick a provider; returns provider name or None to cancel."""
 
-        # In TUI mode, prefer the Textual prompt backend instead of stdin.
-        if ui_key in {"textual", "tui"}:
-            chosen = select_one(
-                title=title,
-                options=cleaned,
-                default=default_provider,
-                allow_cancel=True,
-            )
-            if chosen is not None:
-                return chosen
-
-        if not _fallback_prompt_enabled():
-            return default_provider
-
         cleaned = [c.strip().lower() for c in candidates if (c or "").strip()]
         # De-dupe while preserving order.
         seen: set[str] = set()
         cleaned = [c for c in cleaned if not (c in seen or seen.add(c))]
         if not cleaned:
             return None
+
+        # Prefer any installed prompt backend (e.g. full-screen UI) when available.
+        if has_prompt_backend():
+            return select_one(
+                title=title,
+                options=cleaned,
+                default=default_provider,
+                allow_cancel=True,
+            )
+
+        if not _fallback_prompt_enabled():
+            return default_provider
 
         print()
         print(title)
@@ -268,54 +260,13 @@ def run_agent_repl(
     _apply_active_provider(active_provider)
 
     tool_functions: Dict[str, Callable[..., str]] = {
-        "list_dir": lambda path=".", recursive=False, max_depth=2, max_entries=2000, include_metadata=False: list_dir(
-            path,
-            recursive=recursive,
-            max_depth=max_depth,
-            max_entries=max_entries,
-            include_metadata=include_metadata,
-        ),
-        "read_file": lambda path, offset=0, length=None: read_file(
-            path,
-            offset=offset,
-            length=length,
-        ),
-        "python_exec": lambda code="", input=None, timeout_seconds=10, max_chars=20000: python_exec(
-            code,
-            input=input,
-            timeout_seconds=timeout_seconds,
-            max_chars=max_chars,
-        ),
-        "search_files": lambda query, paths=None, is_regex=True, ignore_case=False, glob=None, context_lines=0, max_matches=200, max_chars=40000: search_files(
-            query,
-            paths=paths,
-            is_regex=is_regex,
-            ignore_case=ignore_case,
-            glob=glob,
-            context_lines=context_lines,
-            max_matches=max_matches,
-            max_chars=max_chars,
-        ),
-        "edit_file": lambda path, *, mode, edits=None, content=None, dry_run=False, make_backup=True: edit_file(
-            path,
-            edits,
-            mode=mode,
-            content=content,
-            dry_run=dry_run,
-            make_backup=make_backup,
-        ),
-        "bash": lambda command="": bash_command(command),
-        "http_fetch": lambda url="", mode="simple", timeout_seconds=None, max_bytes=1500000, extract_text=True, max_chars=20000, headers=None, wait_until="networkidle", user_agent=None: http_fetch(
-            url,
-            mode=mode,
-            timeout_seconds=timeout_seconds,
-            max_bytes=max_bytes,
-            extract_text=extract_text,
-            max_chars=max_chars,
-            headers=headers,
-            wait_until=wait_until,
-            user_agent=user_agent,
-        ),
+        "list_dir": list_dir,
+        "read_file": read_file,
+        "python_exec": python_exec,
+        "search_files": search_files,
+        "edit_file": edit_file,
+        "bash": bash_command,
+        "http_fetch": http_fetch,
     }
 
     def append_context(message: ChatMessage) -> None:
@@ -449,34 +400,25 @@ def run_agent_repl(
         return parsed
 
     def execute_tool_call(call: ToolCallInfo) -> Tuple[Sequence[ChatMessage], Optional[str]]:
-        nonlocal tui_approve_all
         if settings.debug:
             print(f"[debug] executing tool: {call.name}")
 
         session_logger.log_tool_call(name=call.name, arguments=dict(call.arguments or {}), call_id=call.call_id)
 
         if requires_confirmation(call.name):
-            if ui_key in {"textual", "tui"} and confirm_bridge is not None:
-                if tui_approve_all:
-                    ok = True
-                else:
-                    decision = confirm_bridge.confirm(
-                        tool_name=call.name,
-                        arguments=call.arguments,
-                        approve_all=(state.approve_all or tui_approve_all),
-                        debug=settings.debug,
-                    )
-                    if decision == "all":
-                        tui_approve_all = True
-                        try:
-                            state.enable_approve_all()
-                        except Exception:
-                            pass
-                        ok = True
-                    else:
-                        ok = decision == "yes"
-            else:
+            decision = ui_confirm(
+                tool_name=call.name,
+                arguments=call.arguments,
+                approve_all=state.approve_all,
+                debug=settings.debug,
+            )
+            if decision is None:
                 ok = prompt_for_confirmation(call.name, call.arguments, state)
+            elif decision == "all":
+                state.enable_approve_all()
+                ok = True
+            else:
+                ok = decision == "yes"
 
             if not ok:
                 cancel_message = f"Tool '{call.name}' execution cancelled by user."
@@ -696,7 +638,7 @@ def run_agent_repl(
             return process_line_with_tools(
                 line,
                 debug=settings.debug,
-                show_progress=(ui_key not in {"textual", "tui"}),
+                show_progress=(not has_prompt_backend()),
                 append_context=append_context,
                 call_model=call_model,
                 parse_response=parse_response,
@@ -719,7 +661,7 @@ def run_agent_repl(
                 return process_line_with_tools(
                     line,
                     debug=settings.debug,
-                    show_progress=(ui_key not in {"textual", "tui"}),
+                    show_progress=(not has_prompt_backend()),
                     append_context=append_context_maybe_suppress,
                     call_model=call_model,
                     parse_response=parse_response,
@@ -943,87 +885,63 @@ def run_agent_repl(
         if ahead is not None and ahead == 0:
             git_delete_branch(auto_branch.branch, cwd=cwd_now, force=False)
 
-    if ui_key in {"textual", "tui"}:
+    def _context_version() -> int:
         try:
-            from core.textual_ui import run_textual_repl  # lazy import
-            from core.textual_confirm import TextualPromptBridge
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "Textual UI requested but the 'textual' package is not available. "
-                "Install requirements or run inside the dev container."
-            ) from exc
-        except Exception as exc:
-            raise RuntimeError(f"Textual UI requested but failed to initialize: {exc}") from exc
+            return len(context.messages)
+        except Exception:
+            return 0
 
-        confirm_bridge = TextualPromptBridge()
+    def _context_snapshot() -> str:
+        lines: list[str] = []
+        for i, msg in enumerate(context.messages, 1):
+            role = (msg.role or "").strip() or "?"
+            content = (msg.content or "").rstrip()
+            if len(content) > 4000:
+                content = content[:4000].rstrip() + "\n… (truncated)"
+            header = f"{i:03d} {role}"
+            if msg.tool_name:
+                header += f" tool={msg.tool_name}"
+            lines.append(header)
+            if content:
+                lines.append(content)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
 
-        def _context_version() -> int:
-            try:
-                return len(context.messages)
-            except Exception:
-                return 0
+    def _context_delta(since_version: int) -> str:
+        """Format and return only new context entries appended since `since_version`."""
 
-        def _context_snapshot() -> str:
-            lines: list[str] = []
-            for i, msg in enumerate(context.messages, 1):
-                role = (msg.role or "").strip() or "?"
-                content = (msg.content or "").rstrip()
-                if len(content) > 4000:
-                    content = content[:4000].rstrip() + "\n… (truncated)"
-                header = f"{i:03d} {role}"
-                if msg.tool_name:
-                    header += f" tool={msg.tool_name}"
-                lines.append(header)
-                if content:
-                    lines.append(content)
-                lines.append("")
-            return "\n".join(lines).rstrip() + "\n"
+        start = max(int(since_version), 0)
+        msgs = context.messages
+        if start >= len(msgs):
+            return ""
 
-        def _context_delta(since_version: int) -> str:
-            """Format and return only new context entries appended since `since_version`.
+        lines: list[str] = []
+        for i, msg in enumerate(msgs[start:], start + 1):
+            role = (msg.role or "").strip() or "?"
+            content = (msg.content or "").rstrip()
+            if len(content) > 4000:
+                content = content[:4000].rstrip() + "\n… (truncated)"
+            header = f"{i:03d} {role}"
+            if msg.tool_name:
+                header += f" tool={msg.tool_name}"
+            lines.append(header)
+            if content:
+                lines.append(content)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
 
-            since_version is expected to be the previous len(context.messages).
-            """
+    callbacks = ReplCallbacks(
+        initial_line=initial_line,
+        before_first_prompt=before_first_prompt,
+        process_line=process,
+        after_each_prompt=_after_each_prompt,
+        prompt_provider=_prompt_string,
+        context_version=_context_version,
+        context_snapshot=_context_snapshot,
+        context_delta=_context_delta,
+    )
 
-            start = max(int(since_version), 0)
-            msgs = context.messages
-            if start >= len(msgs):
-                return ""
-
-            lines: list[str] = []
-            for i, msg in enumerate(msgs[start:], start + 1):
-                role = (msg.role or "").strip() or "?"
-                content = (msg.content or "").rstrip()
-                if len(content) > 4000:
-                    content = content[:4000].rstrip() + "\n… (truncated)"
-                header = f"{i:03d} {role}"
-                if msg.tool_name:
-                    header += f" tool={msg.tool_name}"
-                lines.append(header)
-                if content:
-                    lines.append(content)
-                lines.append("")
-            return "\n".join(lines).rstrip() + "\n"
-
-        exit_code = run_textual_repl(
-            initial_line=initial_line,
-            before_first_prompt=before_first_prompt,
-            process_line=process,
-            after_each_prompt=_after_each_prompt,
-            prompt_provider=_prompt_string,
-            context_version=_context_version,
-            context_snapshot=_context_snapshot,
-            context_delta=_context_delta,
-            on_app_ready=lambda app: (confirm_bridge.attach_app(app), set_prompt_backend(confirm_bridge)),
-        )
-    else:
-        exit_code = run_repl(
-            initial_line=initial_line,
-            before_first_prompt=before_first_prompt,
-            process_line=process,
-            after_each_prompt=_after_each_prompt,
-            prompt_provider=_prompt_string,
-        )
+    exit_code = int(repl_runner(callbacks))
 
     _prompt_exit_git_flow()
     try:
