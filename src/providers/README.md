@@ -9,7 +9,7 @@ This folder contains provider-specific code in a predictable layout.
 - `tool_schemas.py` – shared helpers to map raw tool specs into provider-specific schema shapes
 - `openai/` – OpenAI implementation
 - `ollama/` – Ollama implementation
-- `copilot/` – GitHub Models (Copilot) implementation
+- `github/` – GitHub Models implementation
 
 ## Adding a new provider
 

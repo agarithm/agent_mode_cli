@@ -37,8 +37,8 @@ def build_openai_responses_tools(prefix: str) -> List[Dict[str, Any]]:
 def build_openai_chat_completions_tools(prefix: str) -> List[Dict[str, Any]]:
     """Build tool schema compatible with OpenAI Chat Completions style APIs.
 
-    Used by GitHub Models (Copilot) and Ollama chat tool calling.
-    Shape matches what `src/providers/copilot/tools.py` and `src/providers/ollama/tools.py`
+    Used by GitHub Models and Ollama chat tool calling.
+    Shape matches what `src/providers/github/tools.py` and `src/providers/ollama/tools.py`
     historically produced.
     """
 

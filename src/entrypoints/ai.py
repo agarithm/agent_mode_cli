@@ -17,9 +17,9 @@ from providers.ollama.adapter import OllamaProviderAdapter
 from providers.ollama.runtime import prepare_runtime
 from providers.ollama.tools import build_tools as build_ollama_tools
 from providers.ollama.validation import ensure_ollama_model
-from providers.copilot.adapter import CopilotProviderAdapter
-from providers.copilot.runtime import create_github_models_client
-from providers.copilot.tools import build_tools as build_copilot_tools
+from providers.github.adapter import GitHubProviderAdapter
+from providers.github.runtime import create_github_models_client
+from providers.github.tools import build_tools as build_github_tools
 from providers.openai.adapter import OpenAIProviderAdapter
 from providers.openai.runtime import create_openai_client
 from providers.openai.tools import build_tools as build_openai_tools
@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             "AI_DEBUG        optional (1/true enables debug)",
             "AI_PROMPT_FILE  optional (default: ~/.ai_prompt)",
             "OPENAI_API_KEY  required for OpenAI provider",
-            "GITHUB_TOKEN    required for Copilot provider (GitHub Models)",
+            "GITHUB_TOKEN    required for GitHub Models provider",
             "OLLAMA_HOST     optional (use remote Ollama)",
             "First CLI args  optional magic keywords for provider/model",
         ),
@@ -181,9 +181,9 @@ def main(argv: list[str] | None = None) -> int:
         client = create_openai_client()
         return OpenAIProviderAdapter(client=client)
 
-    def _create_copilot_adapter() -> CopilotProviderAdapter:
+    def _create_github_adapter() -> GitHubProviderAdapter:
         client = create_github_models_client()
-        return CopilotProviderAdapter(client=client)
+        return GitHubProviderAdapter(client=client)
 
     def _build_providers(default_ollama_model: str, overrides: dict[str, str] | None = None) -> dict[str, ProviderEntry]:
         overrides = overrides or {}
@@ -197,16 +197,16 @@ def main(argv: list[str] | None = None) -> int:
                 prepare_runtime=lambda debug: prepare_runtime(debug=debug, log_prefix="[ai]"),
                 validate_model=lambda model, debug: ensure_ollama_model(model, debug=debug, log_prefix="[ai]"),
             ),
-            "copilot": ProviderEntry(
-                name="copilot",
-                description="GitHub Copilot / GitHub Models (requires GITHUB_TOKEN)",
-                default_model=overrides.get("copilot") or os.getenv("AI_COPILOT_MODEL", "xai/grok-3"),
-                build_tools=build_copilot_tools,
-                create_adapter=_create_copilot_adapter,
+            "github": ProviderEntry(
+                name="github",
+                description="GitHub Models (requires GITHUB_TOKEN)",
+                default_model=overrides.get("github") or os.getenv("AI_GITHUB_MODEL", "xai/grok-3"),
+                build_tools=build_github_tools,
+                create_adapter=_create_github_adapter,
                 prepare_runtime=None,
                 fallback_providers=(
-                    os.getenv("AI_COPILOT_FALLBACK_PRIMARY", "openai"),
-                    os.getenv("AI_COPILOT_FALLBACK_SECONDARY", "ollama"),
+                    os.getenv("AI_GITHUB_FALLBACK_PRIMARY", "openai"),
+                    os.getenv("AI_GITHUB_FALLBACK_SECONDARY", "ollama"),
                 ),
             ),
             "openai": ProviderEntry(
@@ -217,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                 create_adapter=_create_openai_adapter,
                 prepare_runtime=None,
                 fallback_providers=(
-                    os.getenv("AI_OPENAI_FALLBACK_PRIMARY", "copilot"),
+                    os.getenv("AI_OPENAI_FALLBACK_PRIMARY", "github"),
                     os.getenv("AI_OPENAI_FALLBACK_SECONDARY", "ollama"),
                 ),
             ),

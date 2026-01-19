@@ -9,7 +9,7 @@ import httpx
 from core.agent_loop import ParseResult, ToolCallInfo, safe_json_loads
 from core.universal_context import ChatMessage, ToolCall, UniversalContext
 from providers.base import ProviderRateLimitError
-from providers.copilot.runtime import maybe_resolve_model_alias, resolve_gemini_model
+from providers.github.runtime import maybe_resolve_model_alias, resolve_gemini_model
 
 
 def _to_chat_completions_messages(messages: Sequence[ChatMessage]) -> List[Dict[str, Any]]:
@@ -50,7 +50,7 @@ def _to_chat_completions_messages(messages: Sequence[ChatMessage]) -> List[Dict[
 
 
 @dataclass(frozen=True)
-class CopilotProviderAdapter:
+class GitHubProviderAdapter:
     """Provider adapter backed by GitHub Models inference (OpenAI-compatible chat completions)."""
 
     client: httpx.Client
@@ -124,7 +124,7 @@ class CopilotProviderAdapter:
             if exc.response.status_code == 429:
                 raise ProviderRateLimitError(
                     "GitHub Models rate limit hit",
-                    provider="copilot",
+                    provider="github",
                     retry_after=retry_after,
                 ) from exc
 

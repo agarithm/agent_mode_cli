@@ -23,7 +23,7 @@ Provider-specific code lives under `src/providers/`:
 
 - `providers/openai/` – OpenAI adapter + runtime helpers + tool schema
 - `providers/ollama/` – Ollama adapter + runtime helpers + tool schema
-- `providers/copilot/` – GitHub Copilot adapter + runtime helpers + tool schema
+- `providers/github/` – GitHub Models adapter + runtime helpers + tool schema
 
 ## Requirements
 
@@ -108,7 +108,7 @@ ai
 # Inline provider/model selection before the REPL starts
 ai openai
 ai openai gpt-4.1
-ai copilot
+ai github
 
 # Inside the REPL:
 > :provider openai
