@@ -212,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             "openai": ProviderEntry(
                 name="openai",
                 description="OpenAI (requires OPENAI_API_KEY)",
-                default_model=overrides.get("openai") or os.getenv("AI_OPENAI_MODEL", "gpt-5.1-codex"),
+                default_model=overrides.get("openai") or os.getenv("AI_OPENAI_MODEL", "gpt-5.2"),
                 build_tools=build_openai_tools,
                 create_adapter=_create_openai_adapter,
                 prepare_runtime=None,
