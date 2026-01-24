@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.6
 
 # Stage 1: Use official Ollama image to pull models
-FROM ollama/ollama:latest AS ollama-builder
+FROM ollama/ollama:0.15.0 AS ollama-builder
 
 # Pull the gpt-oss model in builder stage
 RUN bash -c '\

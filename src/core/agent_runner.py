@@ -126,7 +126,7 @@ def run_agent_repl(
         models_by_provider[provider_key] = initial_model_env
 
     context = UniversalContext()
-    state = ConfirmState(approve_all=False, debug=settings.debug)
+    confirm = ConfirmState(approve_all=False, debug=settings.debug)
 
     adapter_cache: Dict[str, ProviderAdapter] = {}
 
@@ -409,13 +409,13 @@ def run_agent_repl(
             decision = ui_confirm(
                 tool_name=call.name,
                 arguments=call.arguments,
-                approve_all=state.approve_all,
+                approve_all=confirm.approve_all,
                 debug=settings.debug,
             )
             if decision is None:
-                ok = prompt_for_confirmation(call.name, call.arguments, state)
+                ok = prompt_for_confirmation(call.name, call.arguments, confirm)
             elif decision == "all":
-                state.enable_approve_all()
+                confirm.enable_approve_all()
                 ok = True
             else:
                 ok = decision == "yes"
@@ -579,7 +579,7 @@ def run_agent_repl(
             if action == "debug":
                 result = settings.set_debug_from_text(value)
                 os.environ[config.debug_env] = "1" if settings.debug else "0"
-                state.debug = settings.debug
+                confirm.debug = settings.debug
                 return f"{result}\n\n{_format_settings()}"
 
             if action == "provider":
@@ -769,7 +769,24 @@ def run_agent_repl(
 
     def _after_each_prompt() -> None:
         nonlocal git_branch
-        state.reset_after_prompt()
+        confirm.reset_after_prompt()
+        # Tool results are useful inside a single tool-loop iteration, but are often
+        # huge and not needed for the *next* user prompt. Drop them after each prompt
+        # so they don't pollute subsequent model calls.
+        try:
+            def _keep(msg: ChatMessage) -> bool:
+                role = (msg.role or "").strip()
+                if role == "tool":
+                    return False
+                # Also drop the assistant "tool_calls" placeholder message (content is
+                # empty, only used to represent a tool call in the transcript).
+                if role == "assistant" and msg.tool_calls and (msg.content or "").strip() == "":
+                    return False
+                return True
+
+            context.messages[:] = [m for m in context.messages if _keep(m)]
+        except Exception:
+            pass
         git_branch = get_git_branch(cwd=os.getcwd())
 
     def _prompt_string() -> str:

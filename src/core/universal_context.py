@@ -57,6 +57,3 @@ class UniversalContext:
             return
         self._messages.append(message)
 
-    def extend(self, messages: Iterable[ChatMessage], *, debug: bool = False) -> None:
-        for msg in messages:
-            self.append(msg, debug=debug)
