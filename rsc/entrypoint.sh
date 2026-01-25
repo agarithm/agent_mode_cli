@@ -1,10 +1,35 @@
 #!/bin/bash
 set -e
 
-# Set Ollama environment variables
-export OLLAMA_HOME="${OLLAMA_HOME:-/opt/ollama}"
-export OLLAMA_MODELS="${OLLAMA_MODELS:-/opt/ollama/models}"
-export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+choose_ollama_host() {
+    # Prefer localhost (works when containers are launched with --network host).
+    local candidates=(
+        "http://127.0.0.1:11434"
+        "http://host.docker.internal:11434"
+    )
+
+    for c in "${candidates[@]}"; do
+        if curl -fsS "${c%/}/api/version" >/dev/null 2>&1; then
+            export OLLAMA_HOST="$c"
+            return 0
+        fi
+    done
+
+    # If host.docker.internal doesn't resolve, call that out explicitly.
+    if ! getent hosts host.docker.internal >/dev/null 2>&1; then
+        echo "[entrypoint] ERROR: Ollama not reachable at localhost, and host.docker.internal does not resolve" >&2
+        echo "[entrypoint] If you launch containers via the host 'ai' CLI, it should use --network host." >&2
+        echo "[entrypoint] For manual docker runs on Linux, use: --network host" >&2
+        echo "[entrypoint] Or alternatively add: --add-host=host.docker.internal:host-gateway" >&2
+        exit 1
+    fi
+
+    echo "[entrypoint] ERROR: host Ollama not reachable." >&2
+    echo "[entrypoint] Tried: http://127.0.0.1:11434 and http://host.docker.internal:11434" >&2
+    echo "[entrypoint] Start Ollama on the host (the host 'ai' launcher normally does this automatically)." >&2
+    exit 1
+}
+
 
 # Check if we're running as root (during build) or developer (at runtime)
 if [ "$(id -u)" -eq 0 ]; then
@@ -12,38 +37,16 @@ if [ "$(id -u)" -eq 0 ]; then
     exec "$@"
 fi
 
-# Running as developer user - start Ollama if not already running
-if ! curl -fsS "${OLLAMA_HOST}/api/version" > /dev/null 2>&1; then
-    echo "[entrypoint] Starting Ollama service..."
-    
-    # Start Ollama service in background
-    nohup ollama serve > /tmp/ollama.log 2>&1 &
-    OLLAMA_PID=$!
-    
-    # Wait for Ollama to be ready
-    for i in $(seq 1 30); do
-        if curl -fsS "${OLLAMA_HOST}/api/version" > /dev/null 2>&1; then
-            echo "[entrypoint] Ollama service ready (PID: $OLLAMA_PID)"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            echo "[entrypoint] ERROR: Ollama failed to start after 30 seconds" >&2
-            if [ -f /tmp/ollama.log ]; then
-                cat /tmp/ollama.log >&2
-            fi
-            exit 1
-        fi
-        sleep 1
-    done
-    
-    # Verify model is available
-    if ! ollama list | grep -q "gpt-oss:latest"; then
-        echo "[entrypoint] WARNING: gpt-oss:latest model not found. You may need to pull it manually."
-    else
-        echo "[entrypoint] gpt-oss:latest model is ready"
-    fi
+# Running as developer user - requires host Ollama.
+choose_ollama_host
+
+echo "[entrypoint] Ollama reachable at ${OLLAMA_HOST}"
+
+# Verify model is available (best-effort)
+if curl -fsS "${OLLAMA_HOST%/}/api/tags" 2>/dev/null | grep -q 'gpt-oss'; then
+    echo "[entrypoint] gpt-oss model appears available"
 else
-    echo "[entrypoint] Ollama service already running"
+    echo "[entrypoint] WARNING: gpt-oss model not found. You may need to pull it manually."
 fi
 
 # Execute the provided command or default to bash

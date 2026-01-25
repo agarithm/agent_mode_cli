@@ -15,6 +15,7 @@ from core.system_prompt import build_internal_system_prompt
 from core.ui_runners import run_fullscreen, run_inline
 from providers.ollama.adapter import OllamaProviderAdapter
 from providers.ollama.runtime import prepare_runtime
+from providers.ollama.server import ensure_host_ollama_running, maybe_stop_host_ollama_if_last_container
 from providers.ollama.tools import build_tools as build_ollama_tools
 from providers.ollama.validation import ensure_ollama_model
 from providers.github.adapter import GitHubProviderAdapter
@@ -30,6 +31,8 @@ CONTAINER_ENV_FLAG = "AI_IN_CONTAINER"
 DEFAULT_CONTAINER_IMAGE = os.getenv("AI_CONTAINER_IMAGE", "localhost/agent-mode-dev:latest")
 DEFAULT_PODMAN_BIN = os.getenv("PODMAN_BIN", "docker")
 
+_AGENT_CONTAINER_LABEL = "com.agent_mode.container=1"
+
 
 def _is_truthy(value: str) -> bool:
     return value.lower() in ("1", "true", "yes", "on")
@@ -43,7 +46,7 @@ def _container_launch_disabled() -> bool:
     return _is_truthy(os.getenv("AI_CONTAINER_DISABLE", ""))
 
 
-_ENV_PASSTHROUGH_DENYLIST = {CONTAINER_ENV_FLAG, "HOME"}
+_ENV_PASSTHROUGH_DENYLIST = {CONTAINER_ENV_FLAG, "HOME", "OLLAMA_HOST"}
 
 
 def _collect_env_passthrough() -> list[str]:
@@ -85,14 +88,19 @@ def _maybe_run_inside_container(argv: list[str]) -> None:
     is_podman = "podman" in podman_bin.lower()
     userns_flags = ["--userns=keep-id"] if is_podman else ["--user", f"{os.getuid()}:{os.getgid()}"]
     volume_suffix = ":rw,Z" if is_podman else ":rw"
-    gpu_flags = ["--gpus", "all"] if not is_podman else ["--device", "nvidia.com/gpu=all"]
+
+    debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
+    ensure_host_ollama_running(debug=debug)
 
     cmd = [
         podman_bin,
         "run",
         "--rm",
+        "--label",
+        _AGENT_CONTAINER_LABEL,
+        "--network",
+        "host",
         *userns_flags,
-        *gpu_flags,
         *stdio_flags,
         *_collect_env_passthrough(),
         "--volume",
@@ -108,6 +116,7 @@ def _maybe_run_inside_container(argv: list[str]) -> None:
         f"[ai] launching container '{container_image}' via {podman_bin} for current directory",
         file=sys.stderr,
     )
+    result: subprocess.CompletedProcess[str] | None = None
     try:
         result = subprocess.run(cmd)
     except FileNotFoundError:
@@ -116,8 +125,17 @@ def _maybe_run_inside_container(argv: list[str]) -> None:
             file=sys.stderr,
         )
         raise
+    except KeyboardInterrupt:
+        # Still attempt teardown in finally; container may still be running.
+        result = subprocess.CompletedProcess(cmd, 130)  # type: ignore[arg-type]
+    finally:
+        try:
+            maybe_stop_host_ollama_if_last_container(podman_bin, _AGENT_CONTAINER_LABEL, debug=debug)
+        except Exception as exc:
+            if debug:
+                print(f"[debug] host ollama shutdown check failed: {exc}", file=sys.stderr)
 
-    raise SystemExit(result.returncode)
+    raise SystemExit((result.returncode if result is not None else 1))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -150,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         usage="ai [--inline] [provider] [model] [prompt...]",
         description=(
             "Agent-mode CLI (full REPL) with dynamic provider switching. "
-            "Default provider is Ollama (local)."
+            "Default provider is Ollama."
         ),
         env_lines=(
             "AI_PROVIDER     optional (default: ollama)",
@@ -159,7 +177,6 @@ def main(argv: list[str] | None = None) -> int:
             "AI_PROMPT_FILE  optional (default: ~/.ai_prompt)",
             "OPENAI_API_KEY  required for OpenAI provider",
             "GITHUB_TOKEN    required for GitHub Models provider",
-            "OLLAMA_HOST     optional (use remote Ollama)",
             "First CLI args  optional magic keywords for provider/model",
         ),
         version=__version__,
@@ -190,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         return {
             "ollama": ProviderEntry(
                 name="ollama",
-                description="Local Ollama (default)",
+                description="Ollama (default)",
                 default_model=overrides.get("ollama") or default_ollama_model,
                 build_tools=build_ollama_tools,
                 create_adapter=_create_ollama_adapter,

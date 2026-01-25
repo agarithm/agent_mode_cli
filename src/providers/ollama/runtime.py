@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from typing import Optional
 
 
@@ -34,6 +36,13 @@ def maybe_configure_gpu_defaults(log_prefix: str = LOG_PREFIX) -> Optional[str]:
     global _detected_gpu_description
     if _detected_gpu_description is not None:
         return _detected_gpu_description or None
+
+    # If we're talking to a host/shared Ollama server, GPU configuration here is
+    # not meaningful (it affects the server process environment, not the client).
+    if (os.getenv("OLLAMA_HOST") or "").strip():
+        _detected_gpu_description = ""
+        return None
+
     gpu_names = detect_nvidia_gpus()
     _detected_gpu_description = gpu_names or ""
     if not gpu_names:
@@ -49,8 +58,14 @@ def maybe_configure_gpu_defaults(log_prefix: str = LOG_PREFIX) -> Optional[str]:
 
 
 def ollama_server_running() -> bool:
-    if os.getenv("OLLAMA_HOST"):
-        return True
+    host = (os.getenv("OLLAMA_HOST") or "").strip()
+    if host:
+        url = host.rstrip("/") + "/api/version"
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as resp:
+                return 200 <= getattr(resp, "status", 200) < 300
+        except (urllib.error.URLError, TimeoutError, ValueError):
+            return False
     if not shutil.which("ollama"):
         return False
     try:
@@ -76,7 +91,10 @@ def wait_for_ollama_server(timeout: float = 5.0) -> bool:
 
 
 def ensure_ollama_server(debug: bool = False) -> None:
-    if os.getenv("OLLAMA_HOST"):
+    host = (os.getenv("OLLAMA_HOST") or "").strip()
+    if host:
+        if not wait_for_ollama_server(timeout=5.0):
+            raise RuntimeError(f"OLLAMA_HOST is set but not reachable: {host}")
         return
     if ollama_server_running():
         return
