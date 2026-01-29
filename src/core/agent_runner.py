@@ -465,6 +465,7 @@ def run_agent_repl(
             [
                 "Commands:",
                 "- help | :help                 Show this help.",
+                "- :clear                        Reset chat context (new conversation).",
                 "- :provider [name]              Show or switch provider.",
                 "- :model [id]                   Show or switch model for current provider.",
                 "- :settings [subcommand...]      Show or change runtime settings.",
@@ -483,6 +484,25 @@ def run_agent_repl(
             ]
         )
 
+    def _reset_chat_context(*, reason: str) -> None:
+        """Clear all chat history and re-seed the minimal system context."""
+
+        try:
+            # Prefer a supported API over poking internals.
+            context.clear()
+        except Exception as exc:
+            # If the context implementation changes, keep going but surface debug info.
+            if settings.debug:
+                print(f"[debug] failed to clear chat context: {exc}")
+
+        append_context(ChatMessage(role="system", content=config.internal_system_prompt))
+
+        user_prompt = load_user_prompt(config.prompt_file_env, config.prompt_file_default, debug=settings.debug)
+        if user_prompt:
+            append_context(ChatMessage(role="system", content=user_prompt))
+
+        _announce_active_provider_and_model(reason)
+
     def _try_handle_local_command(line: str) -> Optional[str]:
         nonlocal preferred_provider
         raw = (line or "").strip()
@@ -492,6 +512,10 @@ def run_agent_repl(
 
         if lowered in {"help", ":help", "?", ":?", "commands", ":commands"}:
             return f"{_help_text()}\n\n{_format_settings()}"
+
+        if lowered in {":clear"}:
+            _reset_chat_context(reason="user requested :clear")
+            return "Cleared chat context. Starting a new conversation."
 
         def _format_provider_status() -> str:
             lines: list[str] = [f"Current provider: {active_provider}", "", _format_providers()]

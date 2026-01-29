@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,11 @@ class UniversalContext:
     def messages(self) -> List[ChatMessage]:
         return self._messages
 
+    def clear(self) -> None:
+        """Remove all messages from the context."""
+
+        self._messages.clear()
+
     def append(self, message: ChatMessage, *, debug: bool = False) -> None:
         role = (message.role or "").strip()
         if not role:
@@ -56,4 +61,3 @@ class UniversalContext:
                 print("[debug] skipped appending empty content message")
             return
         self._messages.append(message)
-

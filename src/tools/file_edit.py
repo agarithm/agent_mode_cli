@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import subprocess
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -12,6 +13,10 @@ from ._workspace import resolve_workspace_path, workspace_root
 
 _DEFAULT_MAX_FILE_BYTES = 2_000_000
 _DEFAULT_MAX_DIFF_CHARS = 40_000
+
+# Per-process cache for auto backup behavior.
+# None = unknown; True/False decided on first use.
+_AUTO_MAKE_BACKUP: bool | None = None
 
 
 def _read_text_file(path: Path, *, max_bytes: int = _DEFAULT_MAX_FILE_BYTES) -> tuple[str, Optional[str]]:
@@ -184,9 +189,16 @@ def edit_file(
     mode: Literal["overwrite", "append", "edits"],
     content: Optional[str] = None,
     dry_run: bool = False,
-    make_backup: bool = True,
+    make_backup: bool | None = None,
 ) -> str:
     """Edit a file within the current working directory.
+
+    make_backup:
+        - If True, create a .bak.* backup before writing.
+        - If False, do not create a backup.
+        - If None (default), auto-detect: create backups only when no git HEAD exists
+          (e.g., not a git repo or repo has no commits yet).
+
 
     Choose a mode to control how the file is modified:
     - mode='overwrite' with content=str
@@ -239,6 +251,22 @@ def edit_file(
     if dry_run:
         suffix = "\nnote: diff truncated" if was_truncated else ""
         return "dry_run: true\n---\n" + diff + suffix
+
+    global _AUTO_MAKE_BACKUP
+    if make_backup is None:
+        if _AUTO_MAKE_BACKUP is None:
+            # Auto-detect once per process: if we cannot verify HEAD, prefer creating backups.
+            _AUTO_MAKE_BACKUP = (
+                subprocess.run(
+                    ["git", "rev-parse", "--verify", "HEAD"],
+                    cwd=str(root),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                != 0
+            )
+        make_backup = _AUTO_MAKE_BACKUP
 
     if make_backup:
         backup_path, backup_err = _make_backup(resolved)

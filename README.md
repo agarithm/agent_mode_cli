@@ -94,6 +94,7 @@ Note: `bin/` is a deployment target (generated files). Don’t hand-edit deploye
 **Local / settings commands (not sent to the model):**
 
 - `help` (or `:help`) – show REPL commands and settings knobs
+- `:clear` – clear chat context and start a new conversation
 - `:settings` – show current settings snapshot
 - `:settings provider <name>` or `:provider <name>` – switch providers
 - `:settings model <name>` or `:model <name>` – set the current provider model
