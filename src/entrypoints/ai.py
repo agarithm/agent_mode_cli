@@ -211,17 +211,33 @@ def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_r
             continue
         src = os.path.join(repo_root, rel)
         dst = os.path.join(worktree_root, rel)
-        if not os.path.exists(src):
+        if not os.path.lexists(src):
             continue
-        if os.path.isdir(src):
-            continue
+
+        # `git ls-files --others --exclude-standard` yields untracked file paths,
+        # including files nested under untracked directories. Recreate the
+        # directory structure in the session worktree.
         try:
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-            copied_count += 1
+            parent = os.path.dirname(dst)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+
+            if os.path.islink(src):
+                # Preserve symlinks rather than copying their targets.
+                if os.path.lexists(dst):
+                    os.remove(dst)
+                os.symlink(os.readlink(src), dst)
+                copied_count += 1
+            elif os.path.isfile(src):
+                shutil.copy2(src, dst)
+                copied_count += 1
+            else:
+                # Skip non-regular files (e.g., directories). Empty directories
+                # are not tracked by git and don't need carryover.
+                continue
         except Exception as exc:
             if debug:
-                print(f"[debug] failed to copy untracked file '{rel}' into session worktree: {exc}", file=sys.stderr)
+                print(f"[debug] failed to copy untracked path '{rel}' into session worktree: {exc}", file=sys.stderr)
 
     if debug and (cached_patch.strip() or working_patch.strip() or copied_count > 0):
         print(
