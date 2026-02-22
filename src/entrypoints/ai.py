@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import datetime
 import os
+import re
 import shutil
 import subprocess
 import sys
+import uuid
+from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -11,6 +15,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 from core.agent_runner import AgentRunnerConfig, ProviderEntry, run_agent_repl
 from core.cli_help import handle_common_flags
+from core.git_repo import get_repo_root, is_git_worktree, is_linked_worktree
 from core.system_prompt import build_internal_system_prompt
 from core.ui_runners import run_fullscreen, run_inline
 from providers.ollama.adapter import OllamaProviderAdapter
@@ -48,6 +53,17 @@ def _container_launch_disabled() -> bool:
 
 _ENV_PASSTHROUGH_DENYLIST = {CONTAINER_ENV_FLAG, "HOME", "OLLAMA_HOST"}
 
+_SAFE_WORKTREE_TOKEN = re.compile(r"[^0-9A-Za-z._-]+")
+
+
+@dataclass(frozen=True)
+class SessionWorktree:
+    repo_root: str
+    start_branch: str
+    worktree_root: str
+    session_branch: str
+    launch_cwd: str
+
 
 def _collect_env_passthrough() -> list[str]:
     flags: list[str] = []
@@ -61,6 +77,339 @@ def _collect_env_passthrough() -> list[str]:
         flags.extend(["--env", f"{key}={value}"])
     flags.extend(["--env", f"{CONTAINER_ENV_FLAG}=1"])
     return flags
+
+
+def _normalize_token(value: str) -> str:
+    token = _SAFE_WORKTREE_TOKEN.sub("-", (value or "").strip())
+    token = re.sub(r"-+", "-", token).strip("-._")
+    return token
+
+
+def _run_git_in_repo(args: list[str], *, repo_root: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _run_git_in_path(args: list[str], *, path: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _format_git_error(result: subprocess.CompletedProcess[str]) -> str:
+    return (result.stderr or result.stdout or "").strip() or "unknown git error"
+
+
+def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_root: str, debug: bool) -> None:
+    """Copy uncommitted state from source checkout into a fresh session worktree.
+
+    Worktree branches are created from HEAD, so they do not include local dirty
+    changes from the original checkout by default. This function replays tracked
+    changes via patch and mirrors untracked files so in-session review tools can
+    inspect the same local edits the user had before launching `ai`.
+    """
+
+    diff_res = _run_git_in_repo(["diff", "--binary", "HEAD"], repo_root=repo_root)
+    if diff_res.returncode != 0:
+        if debug:
+            print(f"[debug] unable to collect local diff for session worktree: {_format_git_error(diff_res)}", file=sys.stderr)
+        return
+
+    patch = diff_res.stdout or ""
+    if patch.strip():
+        apply_res = subprocess.run(
+            ["git", "apply", "--whitespace=nowarn", "-"],
+            cwd=worktree_root,
+            input=patch,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if apply_res.returncode != 0:
+            print(
+                "warning: could not fully carry local tracked changes into the session worktree "
+                f"({_format_git_error(apply_res)})",
+                file=sys.stderr,
+            )
+
+    untracked_res = _run_git_in_repo(["ls-files", "--others", "--exclude-standard"], repo_root=repo_root)
+    if untracked_res.returncode != 0:
+        if debug:
+            print(f"[debug] unable to list untracked files for carryover: {_format_git_error(untracked_res)}", file=sys.stderr)
+        return
+
+    copied_count = 0
+    for raw in (untracked_res.stdout or "").splitlines():
+        rel = raw.strip()
+        if not rel:
+            continue
+        src = os.path.join(repo_root, rel)
+        dst = os.path.join(worktree_root, rel)
+        if not os.path.exists(src):
+            continue
+        if os.path.isdir(src):
+            continue
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+            copied_count += 1
+        except Exception as exc:
+            if debug:
+                print(f"[debug] failed to copy untracked file '{rel}' into session worktree: {exc}", file=sys.stderr)
+
+    if debug and (patch.strip() or copied_count > 0):
+        print(
+            f"[debug] carried local dirty state into session worktree (patch={'yes' if patch.strip() else 'no'}, untracked={copied_count})",
+            file=sys.stderr,
+        )
+
+
+def _is_path_within(path: str, base: str) -> bool:
+    try:
+        path_real = os.path.realpath(path)
+        base_real = os.path.realpath(base)
+        return os.path.commonpath([path_real, base_real]) == base_real
+    except Exception:
+        return False
+
+
+def _build_extra_mounts(*, launch_cwd: str, volume_suffix: str) -> list[str]:
+    """Return additional bind mounts needed for git metadata resolution.
+
+    For linked worktrees, `.git` points to `<main-repo>/.git/worktrees/...` which may
+    live outside the worktree path. Mounting `<main-repo>/.git` at the same absolute
+    host path makes git commands inside the container resolve correctly.
+    """
+
+    if not is_git_worktree(cwd=launch_cwd):
+        return []
+
+    common_dir_res = _run_git_in_path(["rev-parse", "--git-common-dir"], path=launch_cwd)
+    common_dir_raw = (common_dir_res.stdout or "").strip()
+    if common_dir_res.returncode != 0 or not common_dir_raw:
+        return []
+
+    if os.path.isabs(common_dir_raw):
+        common_dir = os.path.realpath(common_dir_raw)
+    else:
+        common_dir = os.path.realpath(os.path.join(launch_cwd, common_dir_raw))
+
+    if not os.path.exists(common_dir):
+        return []
+
+    if _is_path_within(common_dir, launch_cwd):
+        return []
+
+    return ["--volume", f"{common_dir}:{common_dir}{volume_suffix}"]
+
+
+def _maybe_prepare_session_worktree(*, cwd: str, debug: bool) -> tuple[str, Optional[SessionWorktree]]:
+    if not is_git_worktree(cwd=cwd):
+        return cwd, None
+
+    if is_linked_worktree(cwd=cwd):
+        return cwd, None
+
+    repo_root = get_repo_root(cwd=cwd)
+    if not repo_root:
+        return cwd, None
+
+    start_branch_result = _run_git_in_repo(["symbolic-ref", "--short", "-q", "HEAD"], repo_root=repo_root)
+    start_branch = (start_branch_result.stdout or "").strip()
+    if not start_branch:
+        if debug:
+            print("[debug] detached HEAD; skipping auto-worktree session setup", file=sys.stderr)
+        return cwd, None
+
+    try:
+        repo_root_real = os.path.realpath(repo_root)
+        cwd_real = os.path.realpath(cwd)
+        sub_path = os.path.relpath(cwd_real, repo_root_real)
+        if sub_path == ".":
+            sub_path = ""
+    except Exception:
+        return cwd, None
+
+    repo_name = _normalize_token(os.path.basename(repo_root_real)) or "repo"
+    branch_prefix = "wt"
+    parent_dir = os.path.join(os.path.dirname(repo_root_real), ".ai-worktrees")
+
+    base_dir = os.path.join(parent_dir, repo_name)
+    os.makedirs(base_dir, exist_ok=True)
+
+    last_error = ""
+    for _ in range(25):
+        stamp = datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S")
+        suffix = uuid.uuid4().hex[:5]
+        slug = f"{stamp}-{suffix}"
+        branch = f"{branch_prefix}/{slug}"
+        worktree_root = os.path.join(base_dir, slug)
+        if os.path.exists(worktree_root):
+            continue
+
+        add_result = _run_git_in_repo(["worktree", "add", "-b", branch, worktree_root, "HEAD"], repo_root=repo_root_real)
+        if add_result.returncode != 0:
+            last_error = (add_result.stderr or add_result.stdout or "").strip()
+            continue
+
+        launch_cwd = worktree_root if not sub_path else os.path.join(worktree_root, sub_path)
+        print(
+            f"[ai] session worktree: branch='{branch}' path='{worktree_root}'",
+            file=sys.stderr,
+        )
+        if debug and sub_path:
+            print(f"[debug] mapped subdirectory to worktree path: {launch_cwd}", file=sys.stderr)
+        _copy_dirty_state_to_worktree(
+            repo_root=repo_root_real,
+            source_cwd=cwd_real,
+            worktree_root=worktree_root,
+            debug=debug,
+        )
+        return launch_cwd, SessionWorktree(
+            repo_root=repo_root_real,
+            start_branch=start_branch,
+            worktree_root=worktree_root,
+            session_branch=branch,
+            launch_cwd=launch_cwd,
+        )
+
+    if last_error:
+        print(f"warning: failed to create session worktree; using current directory ({last_error})", file=sys.stderr)
+    return cwd, None
+
+
+def _merge_session_worktree_back(session: SessionWorktree, *, debug: bool) -> None:
+    status = _run_git_in_path(["status", "--porcelain"], path=session.worktree_root)
+    if status.returncode != 0:
+        print(
+            f"warning: cannot inspect session worktree status at '{session.worktree_root}' ({_format_git_error(status)})",
+            file=sys.stderr,
+        )
+        return
+
+    if (status.stdout or "").strip():
+        add_res = _run_git_in_path(["add", "-A"], path=session.worktree_root)
+        if add_res.returncode != 0:
+            print(
+                f"warning: auto-merge paused; failed to stage session changes ({_format_git_error(add_res)})",
+                file=sys.stderr,
+            )
+            return
+        commit_message = f"ai: auto-commit session {session.session_branch}"
+        commit_res = _run_git_in_path(["commit", "-m", commit_message], path=session.worktree_root)
+        if commit_res.returncode != 0:
+            print(
+                f"warning: auto-merge paused; failed to auto-commit session changes ({_format_git_error(commit_res)})",
+                file=sys.stderr,
+            )
+            return
+
+    pre_sync_res = _run_git_in_path(["merge", "--no-edit", session.start_branch], path=session.worktree_root)
+    if pre_sync_res.returncode != 0:
+        print(
+            "warning: pre-merge sync failed; resolve conflicts in the session worktree, then retry manually.",
+            file=sys.stderr,
+        )
+        details = _format_git_error(pre_sync_res)
+        if details:
+            print(details, file=sys.stderr)
+        return
+    if debug:
+        print(
+            f"[debug] pre-merge sync applied: '{session.start_branch}' -> '{session.session_branch}'",
+            file=sys.stderr,
+        )
+
+    ahead_res = _run_git_in_repo(
+        ["rev-list", "--count", f"{session.start_branch}..{session.session_branch}"],
+        repo_root=session.repo_root,
+    )
+    ahead_count = 0
+    if ahead_res.returncode == 0:
+        try:
+            ahead_count = int((ahead_res.stdout or "0").strip() or "0")
+        except ValueError:
+            ahead_count = 0
+
+    if ahead_count <= 0:
+        remove_res = _run_git_in_repo(["worktree", "remove", session.worktree_root], repo_root=session.repo_root)
+        if remove_res.returncode != 0 and debug:
+            print(f"[debug] worktree cleanup skipped: {_format_git_error(remove_res)}", file=sys.stderr)
+        delete_res = _run_git_in_repo(["branch", "-d", session.session_branch], repo_root=session.repo_root)
+        if delete_res.returncode != 0 and debug:
+            print(f"[debug] branch cleanup skipped: {_format_git_error(delete_res)}", file=sys.stderr)
+        return
+
+    merge_slug = _normalize_token(session.session_branch.replace("/", "-")) or "session"
+    merge_worktree_root = os.path.join(
+        os.path.dirname(session.worktree_root),
+        f"__merge-{merge_slug}",
+    )
+
+    remove_existing_merge_wt = _run_git_in_repo(
+        ["worktree", "remove", merge_worktree_root, "--force"],
+        repo_root=session.repo_root,
+    )
+    if debug and remove_existing_merge_wt.returncode != 0:
+        print(f"[debug] pre-clean merge worktree skipped: {_format_git_error(remove_existing_merge_wt)}", file=sys.stderr)
+
+    add_merge_wt = _run_git_in_repo(
+        ["worktree", "add", "--force", merge_worktree_root, session.start_branch],
+        repo_root=session.repo_root,
+    )
+    if add_merge_wt.returncode != 0:
+        print(
+            "warning: auto-merge paused; could not prepare clean merge worktree "
+            f"for '{session.start_branch}' ({_format_git_error(add_merge_wt)})",
+            file=sys.stderr,
+        )
+        return
+
+    merge_res = _run_git_in_path(["merge", "--no-edit", session.session_branch], path=merge_worktree_root)
+    if merge_res.returncode != 0:
+        print(
+            "warning: session branch merge requires manual resolution; "
+            f"branch='{session.session_branch}' target='{session.start_branch}'",
+            file=sys.stderr,
+        )
+        details = _format_git_error(merge_res)
+        if details:
+            print(details, file=sys.stderr)
+        print(
+            f"warning: resolve conflicts in '{merge_worktree_root}', then finalize merge manually.",
+            file=sys.stderr,
+        )
+        return
+
+    remove_merge_wt = _run_git_in_repo(["worktree", "remove", merge_worktree_root], repo_root=session.repo_root)
+    if remove_merge_wt.returncode != 0 and debug:
+        print(f"[debug] merged, but could not remove temp merge worktree: {_format_git_error(remove_merge_wt)}", file=sys.stderr)
+
+    print(
+        f"[ai] merged session branch '{session.session_branch}' into '{session.start_branch}'",
+        file=sys.stderr,
+    )
+    remove_res = _run_git_in_repo(["worktree", "remove", session.worktree_root], repo_root=session.repo_root)
+    if remove_res.returncode != 0:
+        print(
+            f"warning: merged, but failed to remove worktree '{session.worktree_root}' ({_format_git_error(remove_res)})",
+            file=sys.stderr,
+        )
+    delete_res = _run_git_in_repo(["branch", "-d", session.session_branch], repo_root=session.repo_root)
+    if delete_res.returncode != 0:
+        print(
+            f"warning: merged, but failed to delete session branch '{session.session_branch}' ({_format_git_error(delete_res)})",
+            file=sys.stderr,
+        )
 
 
 def _maybe_run_inside_container(argv: list[str]) -> None:
@@ -90,7 +439,23 @@ def _maybe_run_inside_container(argv: list[str]) -> None:
     volume_suffix = ":rw,Z" if is_podman else ":rw"
 
     debug = os.getenv("AI_DEBUG", "").lower() in ("1", "true", "yes", "on")
+    launch_cwd, session_worktree = _maybe_prepare_session_worktree(cwd=cwd, debug=debug)
     ensure_host_ollama_running(debug=debug)
+
+    session_env_flags: list[str] = []
+    if session_worktree is not None:
+        session_env_flags.extend(
+            [
+                "--env",
+                f"AI_SESSION_BASE_BRANCH={session_worktree.start_branch}",
+                "--env",
+                f"AI_SESSION_BRANCH={session_worktree.session_branch}",
+                "--env",
+                f"AI_SESSION_WORKTREE_ROOT={session_worktree.worktree_root}",
+            ]
+        )
+
+    extra_mount_flags = _build_extra_mounts(launch_cwd=launch_cwd, volume_suffix=volume_suffix)
 
     cmd = [
         podman_bin,
@@ -103,17 +468,19 @@ def _maybe_run_inside_container(argv: list[str]) -> None:
         *userns_flags,
         *stdio_flags,
         *_collect_env_passthrough(),
+        *session_env_flags,
+        *extra_mount_flags,
         "--volume",
-        f"{cwd}:{cwd}{volume_suffix}",
+        f"{launch_cwd}:{launch_cwd}{volume_suffix}",
         "--workdir",
-        cwd,
+        launch_cwd,
         container_image,
         "ai",
         *argv,
     ]
 
     print(
-        f"[ai] launching container '{container_image}' via {podman_bin} for current directory",
+        f"[ai] launching container '{container_image}' via {podman_bin} for {launch_cwd}",
         file=sys.stderr,
     )
     result: subprocess.CompletedProcess[str] | None = None
@@ -129,6 +496,11 @@ def _maybe_run_inside_container(argv: list[str]) -> None:
         # Still attempt teardown in finally; container may still be running.
         result = subprocess.CompletedProcess(cmd, 130)  # type: ignore[arg-type]
     finally:
+        if session_worktree is not None:
+            try:
+                _merge_session_worktree_back(session_worktree, debug=debug)
+            except Exception as exc:
+                print(f"warning: session merge failed unexpectedly ({exc})", file=sys.stderr)
         try:
             maybe_stop_host_ollama_if_last_container(podman_bin, _AGENT_CONTAINER_LABEL, debug=debug)
         except Exception as exc:

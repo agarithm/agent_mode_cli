@@ -144,6 +144,39 @@ Provider fallback behavior:
 
 - `AI_FALLBACK_PROMPT=0` disables interactive prompts and keeps automatic fallback (useful for non-interactive runs)
 
+## Worktree-First Isolation (Recommended)
+
+`ai` now defaults to **automatic worktree isolation** for containerized runs.
+When you start `ai` from a repo root (or subdirectory inside that repo), it creates a fresh linked worktree for the session, then launches the container in that worktree path (mounted read-write).
+
+Defaults:
+
+- Worktrees are created under `../.ai-worktrees/<repo-name>/`
+- Branch names are prefixed with `wt/`
+- If you already start from a linked worktree, `ai` reuses it (no nested worktree)
+- Local uncommitted changes from the source checkout are carried into the session worktree at launch
+- On session end, `ai` attempts to merge the session worktree branch back into the branch that was active at session start
+
+While a session is running in its worktree, use `:sync` to merge the base branch into the worktree branch and reduce end-of-session merge conflicts:
+
+```text
+:sync            # uses session base branch automatically
+:sync main       # explicit source branch
+```
+
+Typical flow:
+
+```bash
+# Start ai from your repo; it auto-creates an isolated worktree session
+cd /path/to/repo
+ai
+
+# If auto-merge reports conflicts, resolve them in your main repo
+git status
+```
+
+Isolation is handled by per-session worktrees, and `ai` attempts merge/cleanup automatically when the session exits.
+
 ## Running From Source (dev)
 
 Use the dev wrapper script to run the tool directly from `src/` (no `dist/` build needed):
