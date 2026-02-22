@@ -279,6 +279,23 @@ def _cleanup_source_checkout_after_merge(session: SessionWorktree, *, debug: boo
                 print(f"[debug] could not remove untracked carryover file '{rel}': {exc}", file=sys.stderr)
 
 
+def _refresh_source_checkout_after_external_merge(session: SessionWorktree, *, debug: bool) -> None:
+    """Refresh source checkout index after branch tip was advanced elsewhere.
+
+    We merge in a temporary worktree, which updates the branch ref without
+    updating the source checkout's index. `git status` can then show phantom
+    staged entries until the index is refreshed.
+    """
+
+    reset_res = _run_git_in_path(["reset", "--mixed", "HEAD"], path=session.source_cwd)
+    if reset_res.returncode != 0:
+        msg = _format_git_error(reset_res)
+        if debug:
+            print(f"[debug] source checkout index refresh failed: {msg}", file=sys.stderr)
+        else:
+            print(f"warning: source checkout index refresh failed ({msg})", file=sys.stderr)
+
+
 def _is_path_within(path: str, base: str) -> bool:
     try:
         path_real = os.path.realpath(path)
@@ -509,6 +526,7 @@ def _merge_session_worktree_back(session: SessionWorktree, *, debug: bool) -> No
         file=sys.stderr,
     )
     _cleanup_source_checkout_after_merge(session, debug=debug)
+    _refresh_source_checkout_after_external_merge(session, debug=debug)
     remove_res = _run_git_in_repo(["worktree", "remove", session.worktree_root], repo_root=session.repo_root)
     if remove_res.returncode != 0:
         print(
