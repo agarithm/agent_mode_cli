@@ -255,17 +255,18 @@ def edit_file(
     global _AUTO_MAKE_BACKUP
     if make_backup is None:
         if _AUTO_MAKE_BACKUP is None:
-            # Auto-detect once per process: if we cannot verify HEAD, prefer creating backups.
-            _AUTO_MAKE_BACKUP = (
-                subprocess.run(
-                    ["git", "rev-parse", "--verify", "HEAD"],
-                    cwd=str(root),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                ).returncode
-                != 0
+            # Auto-detect once per process.
+            # If we're inside a git work tree (including worktrees), we can rely on git history
+            # instead of creating .bak.* backups.
+            # If we're not inside a git work tree (or git isn't available), prefer backups.
+            p = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=str(root),
+                text=True,
+                capture_output=True,
+                check=False,
             )
+            _AUTO_MAKE_BACKUP = (p.returncode != 0) or (p.stdout.strip().lower() != "true")
         make_backup = _AUTO_MAKE_BACKUP
 
     if make_backup:
