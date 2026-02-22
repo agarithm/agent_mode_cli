@@ -129,31 +129,71 @@ def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_r
     inspect the same local edits the user had before launching `ai`.
     """
 
-    tracked_res = _run_git_in_repo(["diff", "--name-only", "HEAD"], repo_root=repo_root)
-    tracked_paths = tuple(p.strip() for p in (tracked_res.stdout or "").splitlines() if p.strip())
-
-    diff_res = _run_git_in_repo(["diff", "--binary", "HEAD"], repo_root=repo_root)
-    if diff_res.returncode != 0:
+    cached_names_res = _run_git_in_repo(["diff", "--cached", "--name-only"], repo_root=repo_root)
+    working_names_res = _run_git_in_repo(["diff", "--name-only"], repo_root=repo_root)
+    if cached_names_res.returncode != 0 or working_names_res.returncode != 0:
         if debug:
-            print(f"[debug] unable to collect local diff for session worktree: {_format_git_error(diff_res)}", file=sys.stderr)
+            print("[debug] unable to collect tracked change paths for session carryover", file=sys.stderr)
+        return DirtyCarryResult(applied=False, tracked_paths=(), untracked_paths=())
+
+    cached_paths = tuple(p.strip() for p in (cached_names_res.stdout or "").splitlines() if p.strip())
+    working_paths = tuple(p.strip() for p in (working_names_res.stdout or "").splitlines() if p.strip())
+    tracked_paths = tuple(dict.fromkeys([*cached_paths, *working_paths]))
+
+    cached_diff_res = _run_git_in_repo(["diff", "--cached", "--binary"], repo_root=repo_root)
+    working_diff_res = _run_git_in_repo(["diff", "--binary"], repo_root=repo_root)
+    if cached_diff_res.returncode != 0 or working_diff_res.returncode != 0:
+        if debug:
+            print("[debug] unable to collect local diffs for session worktree carryover", file=sys.stderr)
         return DirtyCarryResult(applied=False, tracked_paths=tracked_paths, untracked_paths=())
 
-    patch = diff_res.stdout or ""
+    cached_patch = cached_diff_res.stdout or ""
+    working_patch = working_diff_res.stdout or ""
+
     patch_applied = True
-    if patch.strip():
-        apply_res = subprocess.run(
+    if cached_patch.strip():
+        apply_cached_res = subprocess.run(
             ["git", "apply", "--whitespace=nowarn", "-"],
             cwd=worktree_root,
-            input=patch,
+            input=cached_patch,
             text=True,
             capture_output=True,
             check=False,
         )
-        if apply_res.returncode != 0:
+        if apply_cached_res.returncode != 0:
             patch_applied = False
             print(
-                "warning: could not fully carry local tracked changes into the session worktree "
-                f"({_format_git_error(apply_res)})",
+                "warning: could not carry staged tracked changes into the session worktree "
+                f"({_format_git_error(apply_cached_res)})",
+                file=sys.stderr,
+            )
+        else:
+            if cached_paths:
+                stage_res = _run_git_in_path(["add", "--", *cached_paths], path=worktree_root)
+            else:
+                stage_res = _run_git_in_path(["add", "-A"], path=worktree_root)
+            if stage_res.returncode != 0:
+                patch_applied = False
+                print(
+                    "warning: could not stage carried tracked changes in session worktree "
+                    f"({_format_git_error(stage_res)})",
+                    file=sys.stderr,
+                )
+
+    if working_patch.strip():
+        apply_working_res = subprocess.run(
+            ["git", "apply", "--whitespace=nowarn", "-"],
+            cwd=worktree_root,
+            input=working_patch,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if apply_working_res.returncode != 0:
+            patch_applied = False
+            print(
+                "warning: could not carry unstaged tracked changes into the session worktree "
+                f"({_format_git_error(apply_working_res)})",
                 file=sys.stderr,
             )
 
@@ -183,9 +223,9 @@ def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_r
             if debug:
                 print(f"[debug] failed to copy untracked file '{rel}' into session worktree: {exc}", file=sys.stderr)
 
-    if debug and (patch.strip() or copied_count > 0):
+    if debug and (cached_patch.strip() or working_patch.strip() or copied_count > 0):
         print(
-            f"[debug] carried local dirty state into session worktree (patch={'yes' if patch.strip() else 'no'}, untracked={copied_count})",
+            f"[debug] carried local dirty state into session worktree (cached_patch={'yes' if cached_patch.strip() else 'no'}, working_patch={'yes' if working_patch.strip() else 'no'}, untracked={copied_count})",
             file=sys.stderr,
         )
     return DirtyCarryResult(applied=patch_applied, tracked_paths=tracked_paths, untracked_paths=untracked_paths)
