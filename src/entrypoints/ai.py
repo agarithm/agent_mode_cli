@@ -59,10 +59,21 @@ _SAFE_WORKTREE_TOKEN = re.compile(r"[^0-9A-Za-z._-]+")
 @dataclass(frozen=True)
 class SessionWorktree:
     repo_root: str
+    source_cwd: str
     start_branch: str
     worktree_root: str
     session_branch: str
     launch_cwd: str
+    carried_state_applied: bool = False
+    carried_tracked_paths: tuple[str, ...] = ()
+    carried_untracked_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DirtyCarryResult:
+    applied: bool
+    tracked_paths: tuple[str, ...]
+    untracked_paths: tuple[str, ...]
 
 
 def _collect_env_passthrough() -> list[str]:
@@ -109,7 +120,7 @@ def _format_git_error(result: subprocess.CompletedProcess[str]) -> str:
     return (result.stderr or result.stdout or "").strip() or "unknown git error"
 
 
-def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_root: str, debug: bool) -> None:
+def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_root: str, debug: bool) -> DirtyCarryResult:
     """Copy uncommitted state from source checkout into a fresh session worktree.
 
     Worktree branches are created from HEAD, so they do not include local dirty
@@ -118,13 +129,17 @@ def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_r
     inspect the same local edits the user had before launching `ai`.
     """
 
+    tracked_res = _run_git_in_repo(["diff", "--name-only", "HEAD"], repo_root=repo_root)
+    tracked_paths = tuple(p.strip() for p in (tracked_res.stdout or "").splitlines() if p.strip())
+
     diff_res = _run_git_in_repo(["diff", "--binary", "HEAD"], repo_root=repo_root)
     if diff_res.returncode != 0:
         if debug:
             print(f"[debug] unable to collect local diff for session worktree: {_format_git_error(diff_res)}", file=sys.stderr)
-        return
+        return DirtyCarryResult(applied=False, tracked_paths=tracked_paths, untracked_paths=())
 
     patch = diff_res.stdout or ""
+    patch_applied = True
     if patch.strip():
         apply_res = subprocess.run(
             ["git", "apply", "--whitespace=nowarn", "-"],
@@ -135,6 +150,7 @@ def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_r
             check=False,
         )
         if apply_res.returncode != 0:
+            patch_applied = False
             print(
                 "warning: could not fully carry local tracked changes into the session worktree "
                 f"({_format_git_error(apply_res)})",
@@ -145,11 +161,12 @@ def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_r
     if untracked_res.returncode != 0:
         if debug:
             print(f"[debug] unable to list untracked files for carryover: {_format_git_error(untracked_res)}", file=sys.stderr)
-        return
+        return DirtyCarryResult(applied=patch_applied, tracked_paths=tracked_paths, untracked_paths=())
+
+    untracked_paths = tuple(p.strip() for p in (untracked_res.stdout or "").splitlines() if p.strip())
 
     copied_count = 0
-    for raw in (untracked_res.stdout or "").splitlines():
-        rel = raw.strip()
+    for rel in untracked_paths:
         if not rel:
             continue
         src = os.path.join(repo_root, rel)
@@ -171,6 +188,55 @@ def _copy_dirty_state_to_worktree(*, repo_root: str, source_cwd: str, worktree_r
             f"[debug] carried local dirty state into session worktree (patch={'yes' if patch.strip() else 'no'}, untracked={copied_count})",
             file=sys.stderr,
         )
+    return DirtyCarryResult(applied=patch_applied, tracked_paths=tracked_paths, untracked_paths=untracked_paths)
+
+
+def _safe_repo_join(repo_root: str, rel_path: str) -> Optional[str]:
+    candidate = os.path.realpath(os.path.join(repo_root, rel_path))
+    repo_real = os.path.realpath(repo_root)
+    try:
+        if os.path.commonpath([candidate, repo_real]) != repo_real:
+            return None
+    except Exception:
+        return None
+    return candidate
+
+
+def _cleanup_source_checkout_after_merge(session: SessionWorktree, *, debug: bool) -> None:
+    if not session.carried_state_applied:
+        return
+
+    tracked = [p for p in session.carried_tracked_paths if p]
+    if tracked:
+        restore_res = _run_git_in_repo(["restore", "--staged", "--worktree", "--", *tracked], repo_root=session.repo_root)
+        if restore_res.returncode != 0:
+            print(
+                "warning: merged, but failed to reconcile tracked files in source checkout "
+                f"({_format_git_error(restore_res)})",
+                file=sys.stderr,
+            )
+
+    for rel in session.carried_untracked_paths:
+        if not rel:
+            continue
+        abs_path = _safe_repo_join(session.repo_root, rel)
+        if not abs_path:
+            continue
+        if not os.path.exists(abs_path):
+            continue
+
+        tracked_check = _run_git_in_repo(["ls-files", "--error-unmatch", "--", rel], repo_root=session.repo_root)
+        if tracked_check.returncode == 0:
+            continue
+
+        try:
+            if os.path.isdir(abs_path):
+                shutil.rmtree(abs_path)
+            else:
+                os.remove(abs_path)
+        except Exception as exc:
+            if debug:
+                print(f"[debug] could not remove untracked carryover file '{rel}': {exc}", file=sys.stderr)
 
 
 def _is_path_within(path: str, base: str) -> bool:
@@ -268,7 +334,7 @@ def _maybe_prepare_session_worktree(*, cwd: str, debug: bool) -> tuple[str, Opti
         )
         if debug and sub_path:
             print(f"[debug] mapped subdirectory to worktree path: {launch_cwd}", file=sys.stderr)
-        _copy_dirty_state_to_worktree(
+        carry_result = _copy_dirty_state_to_worktree(
             repo_root=repo_root_real,
             source_cwd=cwd_real,
             worktree_root=worktree_root,
@@ -276,10 +342,14 @@ def _maybe_prepare_session_worktree(*, cwd: str, debug: bool) -> tuple[str, Opti
         )
         return launch_cwd, SessionWorktree(
             repo_root=repo_root_real,
+            source_cwd=cwd_real,
             start_branch=start_branch,
             worktree_root=worktree_root,
             session_branch=branch,
             launch_cwd=launch_cwd,
+            carried_state_applied=carry_result.applied,
+            carried_tracked_paths=carry_result.tracked_paths,
+            carried_untracked_paths=carry_result.untracked_paths,
         )
 
     if last_error:
@@ -398,6 +468,7 @@ def _merge_session_worktree_back(session: SessionWorktree, *, debug: bool) -> No
         f"[ai] merged session branch '{session.session_branch}' into '{session.start_branch}'",
         file=sys.stderr,
     )
+    _cleanup_source_checkout_after_merge(session, debug=debug)
     remove_res = _run_git_in_repo(["worktree", "remove", session.worktree_root], repo_root=session.repo_root)
     if remove_res.returncode != 0:
         print(
