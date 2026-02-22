@@ -128,8 +128,10 @@ def _build_container_image(image_tag: str, container_bin: str, dockerfile: Path)
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as exc:
-        print(f"error: container image build failed with exit code {exc.returncode}", file=sys.stderr)
-        raise
+        # Common in CI/WSL/misconfigured Docker setups: broken credential helper.
+        # The Python build artifact is already created above; treat container build as optional.
+        print(f"warning: container image build failed with exit code {exc.returncode}; continuing", file=sys.stderr)
+        return False
     return True
 
 
